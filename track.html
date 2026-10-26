@@ -1,0 +1,23 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Track your repair</title><link rel="stylesheet" href="style.css"></head>
+<body><header><b>IKETECH AUTO LTD</b></header><main id="app">Loading…</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script>
+(async()=>{
+  const app=document.getElementById('app'), t=new URLSearchParams(location.search).get('t')||'';
+  const el=(tag,txt,cls)=>{const e=document.createElement(tag);if(txt!=null)e.textContent=txt;if(cls)e.className=cls;return e};
+  try{
+    const sb=supabase.createClient(IKETECH.SUPABASE_URL,IKETECH.SUPABASE_ANON_KEY);
+    const {data,error}=await sb.rpc('track_repair',{p_token:t});
+    app.textContent='';
+    if(error||!data){app.append(el('div','This link is not valid. Please ask the workshop to send it again.','card'));return}
+    const c=el('div',null,'card');c.append(el('h2',data.vehicle),el('div','Reference '+data.inspection,null));
+    const ol=el('ol',null,'steps');
+    for(const s of data.steps){const li=el('li',s.step,s.done?'done':'');ol.append(li)}
+    c.append(ol);
+    if(data.collected)c.append(el('p','Vehicle collected. Thank you for choosing IKETECH AUTO LTD.'));
+    app.append(c);
+  }catch(e){app.textContent='Could not load. Please try again.'}
+})();
+</script></body></html>

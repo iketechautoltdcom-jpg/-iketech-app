@@ -1,0 +1,20 @@
+:root{--bg:#f5f6f8;--card:#fff;--ink:#1b2430;--mut:#667085;--line:#e3e6ea;--brand:#0b5fff;--ok:#12805c;--warn:#b54708;--bad:#c01048}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1318;--card:#171d25;--ink:#e8edf3;--mut:#9aa6b4;--line:#27303b;--brand:#5b8cff;--ok:#3ccf9a;--warn:#f5a14b;--bad:#ff6b8f}}
+*{box-sizing:border-box}body{margin:0;font:16px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;gap:12px;align-items:center;padding:12px 16px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0}
+header b{flex:1}header a,header button{color:var(--brand);background:none;border:0;font:inherit;cursor:pointer;text-decoration:none}
+main{max-width:900px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:0 0 12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.tile{display:block;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);text-decoration:none;font-weight:600}
+.tile small{display:block;color:var(--mut);font-weight:400}
+label{display:block;font-size:14px;color:var(--mut);margin:10px 0 4px}
+input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit}
+button.p{background:var(--brand);color:#fff;border:0;border-radius:8px;padding:11px 16px;font:inherit;font-weight:600;cursor:pointer;margin-top:12px}
+button.p:disabled{opacity:.5}
+.row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border:0}.mut{color:var(--mut);font-size:14px}
+.pill{display:inline-block;padding:2px 9px;border-radius:99px;border:1px solid var(--line);font-size:13px}
+.err{color:var(--bad);margin-top:10px}.okm{color:var(--ok);margin-top:10px}
+.steps li{padding:8px 0;list-style:none;border-left:3px solid var(--line);padding-left:12px;margin-left:6px}
+.steps li.done{border-color:var(--ok)}.steps li.done::before{content:"✓ ";color:var(--ok)}
