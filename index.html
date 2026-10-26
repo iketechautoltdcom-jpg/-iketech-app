@@ -2,5 +2,23 @@
 <title>IKETECH AUTO</title><link rel="stylesheet" href="style.css"></head>
 <body><header><b>IKETECH AUTO LTD</b><span id="who" class="mut"></span><button id="out" hidden>Sign out</button></header>
 <main id="app">Loading…</main>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
-<script src="config.js"></script><script src="app.js"></script></body></html>
+<script>
+// show any problem on screen instead of staying on "Loading…"
+function showProblem(t){var a=document.getElementById('app');a.textContent='';var d=document.createElement('div');d.className='card err';d.textContent=t;a.appendChild(d);}
+window.addEventListener('error',function(e){if(!window.__appStarted)showProblem('Problem: '+(e.message||'a file did not load'));});
+// load the Supabase library from the first address that works, then config, then the app
+function loadScript(src,ok,fail){var s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=fail;document.head.appendChild(s);}
+var libs=['https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js',
+          'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js',
+          'https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js'];
+(function next(i){
+  if(i>=libs.length)return showProblem('Could not load the Supabase library. Check your internet connection and refresh.');
+  loadScript(libs[i],function(){
+    loadScript('config.js?v='+Date.now(),function(){
+      if(!window.IKETECH)return showProblem('config.js is damaged. It must start with: window.IKETECH = {');
+      window.__appStarted=true;
+      loadScript('app.js?v='+Date.now(),function(){},function(){showProblem('app.js did not load.');});
+    },function(){showProblem('config.js was not found in your repository.');});
+  },function(){next(i+1);});
+})(0);
+</script></body></html>
