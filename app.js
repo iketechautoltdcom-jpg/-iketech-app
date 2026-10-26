@@ -1,5 +1,8 @@
 /* IKETECH AUTO LTD - staff app (no build step). Talks to Supabase; the database enforces every rule. */
-const sb = supabase.createClient(IKETECH.SUPABASE_URL, IKETECH.SUPABASE_ANON_KEY);
+// tidy the pasted values: keep only the web address root, drop spaces, quotes, trailing slashes or paths like /rest/v1
+const CLEAN_URL = (() => { try { return new URL(String(IKETECH.SUPABASE_URL).trim().replace(/^["']|["']$/g, '')).origin; } catch (e) { return String(IKETECH.SUPABASE_URL).trim(); } })();
+const CLEAN_KEY = String(IKETECH.SUPABASE_ANON_KEY).trim().replace(/^["']|["']$/g, '');
+const sb = supabase.createClient(CLEAN_URL, CLEAN_KEY);
 const $app = document.getElementById('app'), $who = document.getElementById('who'), $out = document.getElementById('out');
 let me = null;   // {id, full_name, role, branch_id}
 
@@ -28,7 +31,7 @@ function loginPage(note) {
   btn.onclick = async () => {
     btn.disabled = true; out.textContent = '';
     const { error } = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pw.value });
-    if (error) { out.append(msg('err', 'Could not sign in: ' + error.message + (error.status ? ' (code ' + error.status + ')' : ''))); btn.disabled = false; } else boot();
+    if (error) { out.append(msg('err', 'Could not sign in: ' + error.message + ' [site: ' + CLEAN_URL.replace(/^https?:\/\//,'').slice(0,4) + '…' + CLEAN_URL.slice(-12) + ']' + (error.status ? ' (code ' + error.status + ')' : ''))); btn.disabled = false; } else boot();
   };
   show(h('div', { class: 'card' }, h('h2', {}, 'Sign in'), note ? msg('err', note) : '', field('Email', email), field('Password', pw), btn, out));
 }
