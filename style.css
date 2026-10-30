@@ -18,3 +18,17 @@ button.p:disabled{opacity:.5}
 .err{color:var(--bad);margin-top:10px}.okm{color:var(--ok);margin-top:10px}
 .steps li{padding:8px 0;list-style:none;border-left:3px solid var(--line);padding-left:12px;margin-left:6px}
 .steps li.done{border-color:var(--ok)}.steps li.done::before{content:"✓ ";color:var(--ok)}
+/* printable documents and customer pages */
+.sheet{max-width:794px;margin:16px auto;background:#fff;color:#1b2a49;padding:28px;border:1px solid #ddd;font:13px/1.45 Arial,sans-serif}
+.sheet table{width:100%;border-collapse:collapse}.sheet th{background:#0f766e;color:#fff;text-align:left;padding:6px 8px;font-size:12px}
+.sheet td{padding:6px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top}.sheet .r{text-align:right}
+.sheet .hd{display:flex;gap:16px;align-items:flex-start;border-bottom:2px solid #0f766e;padding-bottom:12px;margin-bottom:14px}
+.sheet .hd img{width:96px;height:auto}.sheet .co{flex:1}.sheet .co b{font-size:21px}.sheet .motto{color:#0f766e;font-style:italic}
+.sheet .ttl{text-align:right}.sheet .ttl b{font-size:19px;color:#0f766e}
+.sheet .terms{margin-top:18px;border-top:1px solid #999;padding-top:6px;font-size:10px;color:#444;line-height:1.5}
+.sheet .tot td{font-weight:bold;border-top:2px solid #1b2a49}
+.bar{max-width:794px;margin:12px auto;display:flex;gap:8px;padding:0 8px}
+.sheet h4{margin:16px 0 6px;color:#0f766e}
+.sheet .st{display:inline-block;padding:1px 8px;border-radius:99px;color:#fff;font-size:11px}
+@media print{body{background:#fff}.bar,header{display:none!important}.sheet{border:0;margin:0;padding:0;max-width:none}@page{size:A4;margin:14mm}}
+input[type=checkbox]{width:auto;margin-right:6px;vertical-align:middle}

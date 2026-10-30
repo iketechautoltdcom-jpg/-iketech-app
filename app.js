@@ -50,7 +50,7 @@ window.addEventListener('hashchange', () => me && route());
 // ---- routing ----
 function route() {
   const [page, arg] = (location.hash.slice(1) || 'home').split('/');
-  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, branches, team }[page] || home)(arg);
+  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, settings, branches, team }[page] || home)(arg);
 }
 
 function home() {
@@ -61,7 +61,7 @@ function home() {
   if (can('ceo','manager','admin','supervisor','advisor','receptionist','accounting')) tiles.push(t('#quotations', 'Quotations', 'Prices for customers to approve'));
   if (can('ceo','manager','admin','advisor','receptionist','accounting')) tiles.push(t('#invoices', 'Invoices & payments', 'Bills, payments and balances'));
   tiles.push(t('#jobs', 'Jobs', can('technician') ? 'Your assigned jobs' : 'Open and recent jobs'));
-  if (can('ceo')) tiles.push(t('#branches', 'Branches', 'Add and manage branches'), t('#team', 'Team', 'Roles and access'));
+  if (can('ceo')) tiles.push(t('#settings', 'Business settings', 'Name, motto, terms, bank details'), t('#branches', 'Branches', 'Add and manage branches'), t('#team', 'Team', 'Roles and access'));
   show(h('h2', {}, 'Hello, ' + me.full_name.split(' ')[0]), h('div', { class: 'grid' }, tiles));
 }
 
@@ -198,6 +198,28 @@ async function team() {
     h('div', { class: 'card mut' }, 'To add a new person: create their login in Supabase (Authentication > Users), then add them to profiles. A simple "invite" button comes in the next step.'), rows);
 }
 
+
+// ---- documents and customer links ----
+const baseUrl = () => location.href.replace(/[#?].*$/, '').replace(/[^/]*$/, '');
+const docUrl = (type, id) => baseUrl() + 'doc.html?type=' + type + '&id=' + encodeURIComponent(id);
+function waNumber(phone) { const d = String(phone || '').replace(/\D/g, ''); if (!d) return ''; if (d.startsWith('234')) return d; if (d.startsWith('0')) return '234' + d.slice(1); return d; }
+function printButton(type, id, label) { return h('a', { class: 'p', href: docUrl(type, id), target: '_blank', style: 'display:inline-block;text-decoration:none;color:#fff;background:var(--brand);border-radius:8px;padding:11px 16px;font-weight:600;margin:12px 8px 0 0' }, label || 'Print / PDF'); }
+
+async function settings() {
+  if (!can('ceo')) return show(msg('err', 'Only the CEO can change business settings.'));
+  const { data } = await sb.from('app_settings').select('key,value');
+  const V = {}; (data || []).forEach(r => V[r.key] = r.value);
+  const defs = [['company_name', 'Company name', 'input'], ['motto', 'Motto', 'input'], ['company_address', 'Address', 'input'], ['company_phone', 'Phone', 'input'], ['company_email', 'Email', 'input'],
+    ['bank_details', 'Bank details for invoices (one line each: bank, account name, number)', 'textarea', 3], ['terms', 'Terms and conditions (one per line)', 'textarea', 10]];
+  const f = {}, form = h('div', { class: 'card' });
+  for (const [k, label, tag, rows] of defs) { f[k] = h(tag, tag === 'textarea' ? { rows } : {}); f[k].value = V[k] || ''; form.append(field(label, f[k])); }
+  const out = h('div'), save = h('button', { class: 'p' }, 'Save settings');
+  save.onclick = async () => { out.textContent = ''; save.disabled = true; const rows = defs.map(([k]) => ({ key: k, value: f[k].value.trim() }));
+    const { error } = await sb.from('app_settings').upsert(rows, { onConflict: 'key' }); save.disabled = false; out.append(error ? msg('err', nice(error.message)) : msg('okm', 'Saved. New documents use these details.')); };
+  form.append(save, out);
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Business settings'), h('div', { class: 'mut' }, 'These appear on every quotation, invoice and report, and on the customer approval page. The logo is the file logo.jpg in your site.'), form);
+}
+
 // =====================================================================
 // INSPECTIONS
 // =====================================================================
@@ -288,6 +310,7 @@ async function insp(arg) {
   const editing = i.technician_id === me.id && ['ASSIGNED', 'IN_PROGRESS', 'RETURNED'].includes(i.status);
   const reload = () => insp(arg);
   const parts = [h('a', { href: '#inspections' }, '← Inspections'), h('h2', {}, i.id + ' · ' + (i.vehicles?.registration || ''))];
+  if (['APPROVED', 'REPORT_SENT', 'CLOSED', 'SUBMITTED'].includes(i.status)) parts.push(printButton('inspection', i.id, 'Print report / PDF'));
 
   parts.push(h('div', { class: 'card' },
     h('div', {}, [i.vehicles?.make, i.vehicles?.model].filter(Boolean).join(' '), ' · ', i.customers?.name || ''), 
@@ -492,7 +515,7 @@ async function quotations() {
 }
 
 async function quotation(id) {
-  const { data: q, error } = await sb.from('quotations').select('*, jobs(id,complaint,vehicles(registration,make,model),customers(name,phone))').eq('id', id).maybeSingle();
+  const { data: q, error } = await sb.from('quotations').select('*, jobs(id,complaint,vehicles(registration,make,model),customers(name,phone,email))').eq('id', id).maybeSingle();
   if (error || !q) return show(msg('err', 'Quotation not found.'));
   const [{ data: lines }, { data: recs }, { data: inv }] = await Promise.all([
     sb.from('quotation_lines').select('*').eq('quotation_id', id).order('sort'), sb.from('recommendations').select('id,item,status').eq('quotation_id', id),
@@ -520,8 +543,21 @@ async function quotation(id) {
     else box.append(h('button', { class: 'p', type: 'button', onclick: async () => { out.textContent = ''; const { data, error } = await sb.rpc('invoice_from_quotation', { p_quotation: id }); if (error) return out.append(msg('err', nice(error.message))); location.hash = '#invoice/' + data; } }, 'Create invoice'));
   }
   box.append(out); parts.push(box);
+  parts.push(printButton('quotation', id));
+  if (['DRAFT', 'SENT'].includes(q.status) && canQuote()) {
+    const link = baseUrl() + 'approve.html?t=' + q.approval_token, cust = q.jobs?.customers || {}, first = (cust.name || '').split(' ')[0] || 'there';
+    const text = `Hello ${first}, your quotation ${q.id} from IKETECH AUTO LTD is ready (${money(lineTotal(lines), q.currency)}). Please review and approve it here: ${link}`;
+    const lb = h('div', { class: 'card' }, h('h3', {}, 'Customer approval link'), h('div', { class: 'mut' }, q.status === 'DRAFT' ? 'Mark the quotation as sent first. The link works once it is sent.' : 'The customer opens this link, reads the quotation and the terms, and approves or declines. No sign-in is needed.'), h('div', { style: 'word-break:break-all;font-size:13px;margin:8px 0' }, link));
+    const cm = h('span', { class: 'mut' });
+    lb.append(h('button', { class: 'p', type: 'button', style: 'margin-right:6px', onclick: async () => { try { await navigator.clipboard.writeText(link); cm.textContent = ' Copied.'; } catch (e) { cm.textContent = ' Select and copy the link above.'; } } }, 'Copy link'));
+    const wa = waNumber(cust.phone);
+    if (wa) lb.append(h('a', { href: 'https://wa.me/' + wa + '?text=' + encodeURIComponent(text), target: '_blank', style: 'display:inline-block;text-decoration:none;color:#fff;background:#12805c;border-radius:8px;padding:11px 16px;font-weight:600;margin-right:6px' }, 'Send on WhatsApp'));
+    if (cust.email) lb.append(h('a', { href: 'mailto:' + cust.email + '?subject=' + encodeURIComponent('Your quotation ' + q.id + ' - IKETECH AUTO LTD') + '&body=' + encodeURIComponent(text), style: 'display:inline-block;text-decoration:none;color:#fff;background:#667085;border-radius:8px;padding:11px 16px;font-weight:600' }, 'Send by email'));
+    lb.append(cm); parts.push(lb);
+  }
   show(...parts);
 }
+const lineTotal = lines => (lines || []).reduce((a, l) => a + l.qty * l.unit_price, 0);
 
 async function invoices() {
   const [{ data }, { data: st }] = await Promise.all([
@@ -565,6 +601,7 @@ async function invoice(id) {
     out.textContent = ''; const { error } = await sb.from('invoices').update({ status }).eq('id', id); if (error) return out.append(msg('err', nice(error.message))); reload(); } }, label);
   if (canBill()) { if (inv.status === 'DRAFT') box.append(setStatus('Issue invoice', 'ISSUED'), setStatus('Cancel', 'CANCELLED', 'background:var(--bad)')); if (inv.status === 'ISSUED') box.append(setStatus('Cancel invoice', 'CANCELLED', 'background:var(--bad)')); }
   box.append(out); parts.push(box);
+  parts.push(printButton('invoice', id, 'Print invoice / PDF'));
 
   if (inv.status === 'ISSUED' || (pays || []).length) {
     const pbox = h('div', { class: 'card' }, h('h3', {}, 'Payments'), st ? h('div', {}, 'Paid ' + money(st.paid, cur) + ' of ' + money(st.total, cur) + ' · balance ' + money(st.balance, cur)) : '');

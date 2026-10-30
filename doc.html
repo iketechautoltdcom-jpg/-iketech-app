@@ -1,0 +1,80 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Document</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<div class="bar"><button class="p" id="print">Print / Save as PDF</button><button class="p" id="back" style="background:#667085">← Back</button></div>
+<div id="doc" class="sheet">Loading…</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script>
+(async () => {
+  const $d = document.getElementById('doc');
+  const el = (tag, txt, cls, style) => { const e = document.createElement(tag); if (txt != null) e.textContent = txt; if (cls) e.className = cls; if (style) e.setAttribute('style', style); return e; };
+  const add = (p, ...k) => { k.flat().forEach(x => x != null && p.append(x.nodeType ? x : document.createTextNode(x))); return p; };
+  document.getElementById('print').onclick = () => window.print();
+  document.getElementById('back').onclick = () => history.length > 1 ? history.back() : window.close();
+  const P = new URLSearchParams(location.search), type = P.get('type'), id = P.get('id');
+  const SYM = { NGN: '₦', USD: '$', GBP: '£', EUR: '€' };
+  const money = (n, c) => (SYM[c] || (c || '') + ' ') + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fail = t => { $d.textContent = ''; $d.append(el('p', t, null, 'color:#c01048')); };
+  try {
+    const url = String(IKETECH.SUPABASE_URL).trim().replace(/^["']|["']$/g, ''), sb = supabase.createClient(new URL(url).origin, String(IKETECH.SUPABASE_ANON_KEY).trim());
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) return fail('Please sign in to the app first, then open this document again.');
+    const co = (await sb.rpc('public_company')).data || {};
+    let title, number, cust = {}, vehicle = '', body = [], cur = 'NGN', fx = null;
+
+    if (type === 'quotation' || type === 'invoice') {
+      const T = type === 'quotation' ? 'quotations' : 'invoices', L = type === 'quotation' ? 'quotation_lines' : 'invoice_lines', col = type === 'quotation' ? 'quotation_id' : 'invoice_id';
+      const { data: d, error } = await sb.from(T).select('*, jobs(complaint, vehicles(registration,make,model,year), customers(name,phone,email))').eq('id', id).maybeSingle();
+      if (error || !d) return fail('Document not found.');
+      const { data: lines } = await sb.from(L).select('*').eq(col, id).order('sort');
+      title = type === 'quotation' ? 'QUOTATION' : 'INVOICE'; number = d.id; cur = d.currency; fx = d.fx_rate; cust = d.jobs?.customers || {};
+      const v = d.jobs?.vehicles || {}; vehicle = [v.year, v.make, v.model].filter(Boolean).join(' ') + (v.registration ? ' (' + v.registration + ')' : '');
+      const tb = el('table'), th = el('tr'); ['#', 'Description', 'Qty', 'Unit price', 'Amount'].forEach((h, i) => th.append(el('th', h, i > 1 ? 'r' : '')));
+      tb.append(th); let total = 0;
+      (lines || []).forEach((l, i) => { const a = l.qty * l.unit_price; total += a; const tr = el('tr'); tr.append(el('td', i + 1), el('td', l.description), el('td', l.qty, 'r'), el('td', money(l.unit_price, cur), 'r'), el('td', money(a, cur), 'r')); tb.append(tr); });
+      const tt = el('tr', null, 'tot'); tt.append(el('td', ''), el('td', 'TOTAL'), el('td', ''), el('td', ''), el('td', money(total, cur), 'r')); tb.append(tt);
+      body.push(add(el('p'), el('b', 'Customer complaint: '), d.jobs?.complaint || ''), tb);
+      if (cur === 'USD' && fx) body.push(el('p', 'Exchange rate: ₦' + Number(fx).toLocaleString() + ' per $1. Naira equivalent: ₦' + (total * fx).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), null, 'font-size:12px'));
+      if (type === 'quotation') body.push(el('p', 'Valid until: ' + (d.valid_until || 'to be set when sent') + (d.status === 'APPROVED' ? ' · Approved: ' + (d.approved_via || '') : ''), null, 'font-size:12px'));
+      else {
+        const { data: pays } = await sb.from('payments').select('*').eq('invoice_id', id).order('created_at'); const paid = (pays || []).reduce((a, p) => a + Number(p.amount), 0);
+        body.push(el('p', 'Issued: ' + (d.issue_date || 'draft') + ' · Due: ' + (d.due_date || '-'), null, 'font-size:12px'));
+        if ((pays || []).length) { body.push(el('h4', 'Payments received')); const pt = el('table'); (pays || []).forEach(p => { const tr = el('tr'); tr.append(el('td', new Date(p.paid_at).toLocaleDateString()), el('td', p.method + (p.reference ? ' · ' + p.reference : '') + (p.reverses ? ' (reversal)' : '')), el('td', money(p.amount, cur), 'r')); pt.append(tr); }); body.push(pt); }
+        const bal = el('p', null, null, 'text-align:right;font-size:15px'); add(bal, el('b', 'Balance due: ' + money(total - paid, cur))); body.push(bal);
+        if (co.bank_details) body.push(el('h4', 'How to pay'), el('div', co.bank_details, null, 'white-space:pre-line'));
+      }
+      if (type === 'quotation') body.push(el('div', 'Customer approval (sign and date): ______________________________', null, 'margin-top:26px'));
+    } else if (type === 'inspection') {
+      const { data: i, error } = await sb.from('inspections').select('*, vehicles(registration,make,model,year), customers(name,phone,email), technician:profiles!inspections_technician_id_fkey(full_name)').eq('id', id).maybeSingle();
+      if (error || !i) return fail('Report not found.');
+      const [{ data: items }, { data: media }] = await Promise.all([sb.from('inspection_items').select('*').eq('inspection_id', id).order('sort'), sb.from('inspection_media').select('item_id,storage_path,kind').eq('inspection_id', id)]);
+      const urls = {}; const paths = (media || []).map(m => m.storage_path);
+      if (paths.length) { const { data: u } = await sb.storage.from('inspection-media').createSignedUrls(paths, 3600); (u || []).forEach(x => x.signedUrl && (urls[x.path] = x.signedUrl)); }
+      title = 'VEHICLE INSPECTION REPORT'; number = i.id; cust = i.customers || {}; const v = i.vehicles || {}; vehicle = [v.year, v.make, v.model].filter(Boolean).join(' ') + ' (' + v.registration + ')';
+      const COL = { GREEN: '#12805c', YELLOW: '#b54708', RED: '#c01048', GREY: '#667085', BLUE: '#0b5fff' }, LAB = { GREEN: 'OK', YELLOW: 'Attention soon', RED: 'Urgent', GREY: 'Not inspected', BLUE: 'Info' };
+      body.push(add(el('p'), el('b', 'Complaint: '), i.complaint), el('p', 'Odometer ' + i.odometer_km + ' km · Fuel ' + i.fuel_level + ' · Technician: ' + (i.technician?.full_name || '-') + (i.approved_at ? ' · Approved ' + new Date(i.approved_at).toLocaleDateString() : ''), null, 'font-size:12px'),
+        el('p', 'Result: ' + (i.overall || 'in progress') + ' — OK ' + i.green + ' · Attention soon ' + i.yellow + ' · Urgent ' + i.red + ' · Not inspected ' + i.grey + ' · Info ' + i.blue));
+      const findings = (items || []).filter(x => x.status && x.status !== 'GREEN');
+      if (findings.length) { body.push(el('h4', 'Findings'));
+        for (const f of findings) { const box = el('div', null, null, 'border:1px solid #e5e7eb;border-left:5px solid ' + COL[f.status] + ';padding:8px;margin-bottom:8px;page-break-inside:avoid'), s = el('span', LAB[f.status], 'st', 'background:' + COL[f.status]);
+          add(box, el('b', f.item + ' '), s, f.finding_type ? el('div', f.finding_type, null, 'font-size:11px;color:#667085') : '', f.observed ? el('div', 'Observed: ' + f.observed) : '', f.test_performed ? el('div', 'Test: ' + f.test_performed + (f.result ? ' → ' + f.result : '')) : '',
+            f.probable_cause ? el('div', 'Probable cause: ' + f.probable_cause) : '', f.recommended_action ? el('div', 'Recommended: ' + f.recommended_action + (f.priority ? ' (' + f.priority + ')' : '')) : '', f.drive_advice ? el('div', 'Driving advice: ' + f.drive_advice, null, 'color:#c01048;font-weight:bold') : '');
+          const ph = el('div', null, null, 'margin-top:6px'); (media || []).filter(m => m.item_id === f.id).forEach(m => urls[m.storage_path] && ph.append(el('img', null, null, 'height:90px;margin-right:6px;border-radius:4px')) && (ph.lastChild.src = urls[m.storage_path])); box.append(ph); body.push(box); } }
+      else body.push(el('p', 'No faults were found.'));
+      body.push(el('p', 'Items that passed (' + (items || []).filter(x => x.status === 'GREEN').length + '): ' + (items || []).filter(x => x.status === 'GREEN').map(x => x.item).join(', '), null, 'font-size:11px;color:#444'));
+    } else return fail('Unknown document type.');
+
+    $d.textContent = '';
+    const hd = el('div', null, 'hd'), logo = el('img'); logo.src = 'logo.jpg'; logo.alt = '';
+    const c = el('div', null, 'co'); add(c, el('b', co.company_name || 'IKETECH AUTO LTD'), el('div', co.motto || '', 'motto'), el('div', [co.company_address, co.company_phone, co.company_email].filter(x => x && !/^Add /.test(x)).join(' | '), null, 'font-size:11px'));
+    const t = el('div', null, 'ttl'); add(t, el('b', title), el('div', number), el('div', new Date().toLocaleDateString('en-GB')));
+    add(hd, logo, c, t);
+    const info = el('table'); const tr = el('tr'); const l = el('td'); add(l, el('b', 'Customer'), el('div', cust.name || ''), el('div', [cust.phone, cust.email].filter(Boolean).join(' · '))); const r = el('td'); add(r, el('b', 'Vehicle'), el('div', vehicle)); tr.append(l, r); info.append(tr);
+    add($d, hd, info, body);
+    const terms = (co.terms || '').split('\n').filter(x => x.trim());
+    if (terms.length) { const tm = el('div', null, 'terms'); tm.append(el('b', 'TERMS AND CONDITIONS')); terms.forEach((x, i) => tm.append(el('div', (i + 1) + '. ' + x))); $d.append(tm); }
+    document.title = title + ' ' + number;
+  } catch (e) { fail('Could not load: ' + (e.message || e)); }
+})();
+</script></body></html>
