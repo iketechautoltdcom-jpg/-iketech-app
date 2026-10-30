@@ -70,7 +70,7 @@
     const c = el('div', null, 'co'); add(c, el('b', co.company_name || 'IKETECH AUTO LTD'), el('div', co.motto || '', 'motto'), el('div', [co.company_address, co.company_phone, co.company_email].filter(x => x && !/^Add /.test(x)).join(' | '), null, 'font-size:11px'));
     const t = el('div', null, 'ttl'); add(t, el('b', title), el('div', number), el('div', new Date().toLocaleDateString('en-GB')));
     add(hd, logo, c, t);
-    const info = el('table'); const tr = el('tr'); const l = el('td'); add(l, el('b', 'Customer'), el('div', cust.name || ''), el('div', [cust.phone, cust.email].filter(Boolean).join(' · '))); const r = el('td'); add(r, el('b', 'Vehicle'), el('div', vehicle)); tr.append(l, r); info.append(tr);
+    const info = el('table'); const tr = el('tr'); const l = el('td'); add(l, el('b', 'Customer'), el('div', cust.name || ''), el('div', cust.phone || '')); const r = el('td'); add(r, el('b', 'Vehicle'), el('div', vehicle)); tr.append(l, r); info.append(tr);
     add($d, hd, info, body);
     const terms = (co.terms || '').split('\n').filter(x => x.trim());
     if (terms.length) { const tm = el('div', null, 'terms'); tm.append(el('b', 'TERMS AND CONDITIONS')); terms.forEach((x, i) => tm.append(el('div', (i + 1) + '. ' + x))); $d.append(tm); }
