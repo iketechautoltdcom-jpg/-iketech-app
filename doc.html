@@ -25,7 +25,7 @@
 
     if (type === 'quotation' || type === 'invoice') {
       const T = type === 'quotation' ? 'quotations' : 'invoices', L = type === 'quotation' ? 'quotation_lines' : 'invoice_lines', col = type === 'quotation' ? 'quotation_id' : 'invoice_id';
-      const { data: d, error } = await sb.from(T).select('*, jobs(complaint, vehicles(registration,make,model,year), customers(name,phone,email))').eq('id', id).maybeSingle();
+      const { data: d, error } = await sb.from(T).select('*, jobs(complaint, diagnosis, diagnosis_confirmed, recommended_solution, vehicles(registration,make,model,year), customers(name,phone,email))').eq('id', id).maybeSingle();
       if (error || !d) return fail('Document not found.');
       const { data: lines } = await sb.from(L).select('*').eq(col, id).order('sort');
       title = type === 'quotation' ? 'QUOTATION' : 'INVOICE'; number = d.id; cur = d.currency; fx = d.fx_rate; cust = d.jobs?.customers || {};
@@ -34,7 +34,16 @@
       tb.append(th); let total = 0;
       (lines || []).forEach((l, i) => { const a = l.qty * l.unit_price; total += a; const tr = el('tr'); tr.append(el('td', i + 1), el('td', l.description), el('td', l.qty, 'r'), el('td', money(l.unit_price, cur), 'r'), el('td', money(a, cur), 'r')); tb.append(tr); });
       const tt = el('tr', null, 'tot'); tt.append(el('td', ''), el('td', 'TOTAL'), el('td', ''), el('td', ''), el('td', money(total, cur), 'r')); tb.append(tt);
-      body.push(add(el('p'), el('b', 'Customer complaint: '), d.jobs?.complaint || ''), tb);
+      body.push(add(el('p'), el('b', 'Customer complaint: '), d.jobs?.complaint || ''));
+      if (type === 'quotation') {
+        const jb = d.jobs || {};
+        if (jb.diagnosis_confirmed && (jb.diagnosis || '').trim()) body.push(add(el('p'), el('b', 'Diagnosis (confirmed by test): ', null, 'color:#0f766e'), jb.diagnosis));
+        const { data: reps } = await sb.from('recommendations').select('item, summary, priority').eq('quotation_id', id).order('id');
+        const rl = (reps || []).map(r => r.item + (r.summary ? ' – ' + r.summary : ''));
+        if ((jb.recommended_solution || '').trim()) rl.unshift(jb.recommended_solution.trim());
+        if (rl.length) { const ul = el('ul', null, null, 'margin:4px 0 8px 18px;padding:0'); rl.forEach(x => ul.append(el('li', x))); body.push(add(el('p'), el('b', 'Recommended repair:', null, 'color:#0f766e')), ul); }
+      }
+      body.push(tb);
       if (cur === 'USD' && fx) body.push(el('p', 'Exchange rate: ₦' + Number(fx).toLocaleString() + ' per $1. Naira equivalent: ₦' + (total * fx).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), null, 'font-size:12px'));
       if (type === 'quotation') body.push(el('p', 'Valid until: ' + (d.valid_until || 'to be set when sent') + (d.status === 'APPROVED' ? ' · Approved: ' + (d.approved_via || '') : ''), null, 'font-size:12px'));
       else {

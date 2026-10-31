@@ -22,6 +22,10 @@
       add(hd, logo, add(el('div'), el('b', co.company_name || 'IKETECH AUTO LTD', null, 'font-size:18px;color:#0f766e'), el('div', co.motto || '', 'mut', 'font-style:italic;color:#0f766e')));
       app.append(hd);
       const c = el('div', null, 'card'); add(c, el('h2', 'Quotation ' + q.number, null, 'color:#0f766e'), el('div', 'Hello ' + (q.customer || '') + ', here is the quotation for your ' + q.vehicle + '.', 'mut'));
+      if (q.complaint) c.append(add(el('div', null, null, 'margin-top:10px'), el('b', 'Your complaint: ', null, 'color:#0f766e'), q.complaint));
+      if (q.diagnosis) c.append(add(el('div', null, null, 'margin-top:8px'), el('b', 'Diagnosis (confirmed by test): ', null, 'color:#0f766e'), q.diagnosis));
+      const rl = (q.repairs || []).map(r => r.item + (r.action ? ' – ' + r.action : '')); if (q.recommended_solution) rl.unshift(q.recommended_solution);
+      if (rl.length) { const ul = el('ul', null, null, 'margin:4px 0 0 18px;padding:0'); rl.forEach(x => ul.append(el('li', x))); c.append(add(el('div', null, null, 'margin-top:8px'), el('b', 'Recommended repair:', null, 'color:#0f766e')), ul); }
       c.append(add(el('div', null, null, 'display:flex;justify-content:space-between;background:#0f766e;color:#fff;padding:7px 10px;border-radius:6px;margin-top:10px;font-size:13px;font-weight:bold'), el('span', 'Description'), el('span', 'Amount')));
       q.lines.forEach(l => c.append(add(el('div', null, 'row'), add(el('span'), el('b', l.description), el('div', l.type + ' · ' + l.qty + ' × ' + money(l.unit_price, q.currency), 'mut')), el('span', money(l.qty * l.unit_price, q.currency)))));
       c.append(add(el('div', null, 'row', 'border-top:2px solid #0f766e'), el('b', 'Total', null, 'color:#0f766e'), el('b', money(q.total, q.currency), null, 'color:#0f766e')));
