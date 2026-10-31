@@ -39,7 +39,7 @@ function loginPage(note) {
 async function boot() {
   const { data: { session } } = await sb.auth.getSession();
   if (!session) { $who.textContent = ''; $out.hidden = true; return loginPage(); }
-  const { data, error } = await sb.from('profiles').select('id, full_name, role, branch_id, is_active').eq('id', session.user.id).maybeSingle();
+  const { data, error } = await sb.from('profiles').select('id, full_name, role, branch_id, is_active, can_see_payroll').eq('id', session.user.id).maybeSingle();
   if (error || !data || !data.is_active) { await sb.auth.signOut(); return loginPage(error ? 'Signed in, but the staff profile could not be read: ' + error.message : 'Signed in, but there is no active staff profile for this login. The profile row must use this user\'s id.'); }
   me = data; $who.textContent = data.full_name + ' · ' + data.role; $out.hidden = false;
   route();
@@ -50,7 +50,7 @@ window.addEventListener('hashchange', () => me && route());
 // ---- routing ----
 function route() {
   const [page, arg] = (location.hash.slice(1) || 'home').split('/');
-  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, messages, settings, branches, team }[page] || home)(arg);
+  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, messages, payroll, settings, branches, team }[page] || home)(arg);
 }
 
 function home() {
@@ -62,6 +62,7 @@ function home() {
   if (can('ceo','manager','admin','advisor','receptionist','accounting')) tiles.push(t('#invoices', 'Invoices & payments', 'Bills, payments and balances'));
   if (can('ceo','manager','admin','supervisor','advisor','receptionist')) tiles.push(t('#messages', 'Messages', 'Updates waiting to be sent to customers'));
   tiles.push(t('#jobs', 'Jobs', can('technician') ? 'Your assigned jobs' : 'Open and recent jobs'));
+  if (can('ceo') || me.can_see_payroll) tiles.push(t('#payroll', 'Payroll', 'Staff pay, advances and payslips (private)'));
   if (can('ceo')) tiles.push(t('#settings', 'Business settings', 'Name, motto, terms, bank details'), t('#branches', 'Branches', 'Add and manage branches'), t('#team', 'Team', 'Roles and access'));
   show(h('h2', {}, 'Hello, ' + me.full_name.split(' ')[0]), h('div', { class: 'grid' }, tiles));
 }
@@ -109,6 +110,95 @@ async function messages() {
     h('div', { class: 'mut' }, 'Each update is written for you. Tap a button, your WhatsApp or email opens with the message ready, then just press send.'),
     h('label', {}, showAll, ' Show sent and skipped too'), list);
   load();
+}
+
+// ---- payroll (CEO and people the CEO allows; every action goes through database functions) ----
+async function payroll(tab) {
+  if (!(can('ceo') || me.can_see_payroll)) return show(msg('err', 'Payroll is private.'));
+  tab = ['runs', 'staff', 'advances', 'rates'].includes(tab) ? tab : 'runs';
+  const month = h('input', { type: 'month', value: sessionStorage.getItem('paymonth') || new Date().toISOString().slice(0, 7) });
+  month.onchange = () => { try { sessionStorage.setItem('paymonth', month.value); } catch (e) {} draw(); };
+  const body = h('div'), nav = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin:10px 0' },
+    [['runs', 'Pay runs'], ['staff', 'Staff'], ['advances', 'Advances'], ['rates', 'Tax and rates']].map(([k, l]) => h('a', { href: '#payroll/' + k, class: 'btn' + (k === tab ? ' p' : '') }, l)));
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Payroll'), nav, body);
+  const N = x => Number(x || 0), fmt = x => money(x, 'NGN');
+  async function draw() {
+    body.textContent = '';
+    const { data, error } = await sb.rpc('payroll_overview', { p_month: month.value || new Date().toISOString().slice(0, 7) });
+    if (error) return body.append(msg('err', nice(error.message) + (/payroll_overview/.test(error.message) ? ' (Run file 11_payroll.sql in Supabase first.)' : '')));
+    ({ runs: tRuns, staff: tStaff, advances: tAdv, rates: tRates }[tab])(data);
+  }
+  const call = async (fn, args, out, then) => { const { data, error } = await sb.rpc(fn, args); if (error) { out.textContent = ''; out.append(msg('err', nice(error.message))); return false; } if (then) then(data); return true; };
+
+  function tRuns(d) {
+    const out = h('div'), gen = h('button', { class: 'p', type: 'button' }, 'Generate draft for this month');
+    gen.onclick = async () => { out.textContent = ''; if (await call('payroll_generate', { p_month: month.value }, out, n => out.append(msg('okm', n + ' draft pay line(s) created.')))) setTimeout(draw, 700); };
+    body.append(h('div', { class: 'card' }, field('Month', month), gen, out));
+    if (!d.runs.length) return body.append(h('div', { class: 'card mut' }, 'No pay lines for this month yet. Add staff first, then generate.'));
+    const sum = k => d.runs.reduce((a, r) => a + N(r[k]), 0);
+    body.append(h('div', { class: 'card' }, h('h3', {}, 'Month summary'),
+      [['Staff', d.runs.length], ['Gross pay', fmt(sum('gross'))], ['Net pay (to pay staff)', fmt(sum('net'))], ['Pension + PAYE + NHF to remit', fmt(sum('pension_employee') + sum('pension_employer') + sum('paye') + sum('nhf'))], ['Total cost to company', fmt(sum('employer_cost'))]]
+        .map(([a, b]) => h('div', { class: 'row' }, h('span', {}, a), h('b', {}, String(b))))));
+    for (const r of d.runs) {
+      const bonus = h('input', { type: 'number', min: 0, step: '0.01', value: N(r.bonus) }), cb = h('input', { type: 'number', min: 0, step: '0.01', value: N(r.commission_base) }), od = h('input', { type: 'number', min: 0, step: '0.01', value: N(r.other_deduction) });
+      const o = h('div'), btns = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' });
+      const act = (label, fn, cls) => { const b = h('button', { type: 'button', class: cls || '' }, label); b.onclick = fn; btns.append(b); };
+      if (r.status === 'DRAFT') {
+        act('Recalculate', async () => { if (await call('payroll_recalc', { p_id: r.id, p_bonus: N(bonus.value), p_comm_base: N(cb.value), p_other: N(od.value) }, o)) draw(); });
+        act('Approve', async () => { if (await call('payroll_approve', { p_id: r.id }, o)) draw(); }, 'p');
+      }
+      if (r.status === 'APPROVED') act('Mark paid', async () => { const ref = prompt('Payment reference (optional)') ; if (ref === null) return; if (await call('payroll_pay', { p_id: r.id, p_date: null, p_method: 'Bank transfer', p_ref: ref }, o)) draw(); }, 'p');
+      if (['DRAFT', 'APPROVED', 'PAID'].includes(r.status)) act('Reverse', async () => { const why = prompt('Why are you reversing this line?'); if (!why) return; if (await call('payroll_reverse', { p_id: r.id, p_reason: why }, o)) draw(); });
+      btns.append(h('a', { class: 'btn', href: 'payslip.html?id=' + encodeURIComponent(r.id), target: '_blank', rel: 'noopener' }, 'Payslip'));
+      body.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, r.name), h('span', { class: 'pill' }, r.status)),
+        h('div', { class: 'row' }, h('span', {}, 'Gross ' + fmt(r.gross)), h('span', { class: 'mut' }, 'Pension ' + fmt(r.pension_employee) + ' · PAYE ' + fmt(r.paye) + (N(r.advance_repayment) ? ' · Advance ' + fmt(r.advance_repayment) : ''))),
+        h('div', { class: 'row' }, h('b', {}, 'Net pay'), h('b', {}, fmt(r.net))), r.notes ? h('div', { class: 'err' }, r.notes) : '',
+        r.status === 'DRAFT' ? h('div', {}, field('Bonus', bonus), field('Sales amount for commission', cb), field('Other deduction', od)) : '', btns, o));
+    }
+  }
+
+  function tStaff(d) {
+    const form = (e) => {
+      e = e || {}; const f = {}, mk = (k, type, label, extra) => { f[k] = h('input', Object.assign({ type: type || 'text', value: e[k] ?? '' }, extra || {})); return field(label, f[k]); };
+      const chk = (k, label) => { f[k] = h('input', { type: 'checkbox' }); f[k].checked = e[k] === undefined ? k === 'pension_applies' : !!e[k]; return h('label', { style: 'display:block' }, f[k], ' ' + label); };
+      const st = h('select', {}, ['ACTIVE', 'LEFT', 'SUSPENDED'].map(x => h('option', { selected: (e.status || 'ACTIVE') === x }, x))), out = h('div'), save = h('button', { class: 'p', type: 'button' }, e.id ? 'Save changes' : 'Add staff');
+      save.onclick = async () => {
+        const p = { id: e.id || '', status: st.value }; for (const k of ['name', 'job_title', 'email', 'monthly_basic', 'housing', 'transport', 'other_allowance', 'commission_pct', 'start_date', 'bank', 'account_number']) p[k] = f[k].value;
+        for (const k of ['pension_applies', 'nhf_applies', 'paye_applies']) p[k] = f[k].checked; p.branch_id = me.branch_id || '';
+        out.textContent = ''; if (await call('payroll_save_employee', { p }, out, () => out.append(msg('okm', 'Saved.')))) setTimeout(draw, 600);
+      };
+      return h('div', {}, mk('name', 'text', 'Full name'), mk('job_title', 'text', 'Job title'), mk('email', 'email', 'Email'), mk('monthly_basic', 'number', 'Monthly basic salary (₦)', { min: 0, step: '0.01' }), mk('housing', 'number', 'Housing allowance (₦)', { min: 0 }),
+        mk('transport', 'number', 'Transport allowance (₦)', { min: 0 }), mk('other_allowance', 'number', 'Other allowance (₦)', { min: 0 }), mk('commission_pct', 'number', 'Commission % of sales amount', { min: 0, max: 100, step: '0.01' }),
+        chk('pension_applies', 'Pension applies'), chk('nhf_applies', 'Housing fund (NHF) applies'), chk('paye_applies', 'PAYE tax applies'), mk('start_date', 'date', 'Start date'), field('Status', st), mk('bank', 'text', 'Bank'), mk('account_number', 'text', 'Account number'), save, out);
+    };
+    body.append(h('div', { class: 'card' }, h('h3', {}, 'Add staff'), form()));
+    for (const e of d.employees) { const det = h('details', { class: 'card' }, h('summary', {}, h('b', {}, e.name), ' · ' + (e.job_title || '') + ' · ' + fmt(e.monthly_basic) + ' · ' + e.status), form(e)); body.append(det); }
+  }
+
+  function tAdv(d) {
+    const sel = h('select', {}, d.employees.filter(e => e.status === 'ACTIVE').map(e => h('option', { value: e.id }, e.name))), amt = h('input', { type: 'number', min: 1, step: '0.01' }), mo = h('input', { type: 'number', min: 1, step: '0.01' }), nt = h('input'), out = h('div'), b = h('button', { class: 'p', type: 'button' }, 'Record advance');
+    b.onclick = async () => { out.textContent = ''; if (await call('payroll_add_advance', { p_emp: sel.value, p_amount: N(amt.value), p_monthly: N(mo.value), p_notes: nt.value }, out)) draw(); };
+    body.append(h('div', { class: 'card' }, h('h3', {}, 'New salary advance'), field('Staff', sel), field('Amount (₦)', amt), field('Monthly repayment (₦)', mo), field('Note', nt), b, out));
+    if (!d.advances.length) body.append(h('div', { class: 'card mut' }, 'No advances recorded.'));
+    for (const a of d.advances) {
+      const o = h('div'), c = h('button', { type: 'button' }, 'Cancel'); c.onclick = async () => { if (confirm('Cancel this advance?') && await call('payroll_cancel_advance', { p_id: a.id }, o)) draw(); };
+      body.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, a.name), h('span', { class: 'pill' }, a.status)), h('div', { class: 'mut' }, fmt(a.amount) + ' · repays ' + fmt(a.monthly_repayment) + ' a month · given ' + a.given_on),
+        a.status === 'ACTIVE' ? h('div', {}, 'Still owed: ', h('b', {}, fmt(a.balance)), ' ', c) : '', o));
+    }
+  }
+
+  function tRates(d) {
+    const r = {}, out = h('div'), box = h('div', { class: 'card' }, h('h3', {}, 'Rates'), h('div', { class: 'mut' }, 'Confirm every figure with your accountant. These drive every pay run.'));
+    for (const x of d.rates) { r[x.key] = h('input', { type: 'number', min: 0, step: '0.01', value: x.value }); box.append(field(x.key.replace(/_/g, ' ').toLowerCase() + (x.note ? ' - ' + x.note : ''), r[x.key])); }
+    const bands = h('div', { class: 'card' }, h('h3', {}, 'PAYE tax bands (per year)'), h('div', { class: 'mut' }, 'Enter bands from the current tax law, in order. Leave the size empty on the last band (= the rest). Until set, PAYE shows 0 with a warning.'));
+    const rows = []; const addRow = (b) => { const sz = h('input', { type: 'number', min: 0, placeholder: 'Band size ₦ per year (empty = the rest)', value: b && b.band_size != null ? b.band_size : '' }), rt = h('input', { type: 'number', min: 0, max: 100, step: '0.01', placeholder: 'Rate %', value: b ? b.rate_pct : '' }); rows.push({ sz, rt }); bands.insertBefore(h('div', { style: 'display:flex;gap:8px;margin-top:6px' }, sz, rt), more); };
+    const more = h('button', { type: 'button' }, '+ Add band'); more.onclick = () => addRow(); bands.append(more); d.bands.forEach(addRow);
+    const save = h('button', { class: 'p', type: 'button' }, 'Save rates and bands');
+    save.onclick = async () => { out.textContent = ''; const rates = {}; for (const k in r) rates[k] = N(r[k].value); const bs = rows.filter(x => x.rt.value !== '').map(x => ({ band_size: x.sz.value === '' ? null : N(x.sz.value), rate_pct: N(x.rt.value) }));
+      if (await call('payroll_save_rates', { p_rates: rates, p_bands: bs }, out, () => out.append(msg('okm', 'Saved. Recalculate any draft lines to use the new rates.')))) {} };
+    body.append(box, bands, save, out);
+  }
+  draw();
 }
 
 // ---- customers ----

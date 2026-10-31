@@ -1,0 +1,42 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Payslip</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<div class="bar"><button class="p" id="print">Print / Save as PDF</button><button class="p" id="back" style="background:#667085">← Back</button></div>
+<div id="doc" class="sheet">Loading…</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script>
+(async () => {
+  const $d = document.getElementById('doc');
+  const el = (tag, txt, cls, style) => { const e = document.createElement(tag); if (txt != null) e.textContent = txt; if (cls) e.className = cls; if (style) e.setAttribute('style', style); return e; };
+  const add = (p, ...k) => { k.flat().forEach(x => x != null && p.append(x.nodeType ? x : document.createTextNode(x))); return p; };
+  document.getElementById('print').onclick = () => window.print();
+  document.getElementById('back').onclick = () => history.length > 1 ? history.back() : window.close();
+  const id = new URLSearchParams(location.search).get('id');
+  const money = n => '₦' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fail = t => { $d.textContent = ''; $d.append(el('p', t, null, 'color:#c01048')); };
+  try {
+    const url = String(IKETECH.SUPABASE_URL).trim().replace(/^["']|["']$/g, ''), sb = supabase.createClient(new URL(url).origin, String(IKETECH.SUPABASE_ANON_KEY).trim());
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) return fail('Please sign in to the app first, then open this payslip again.');
+    const co = (await sb.rpc('public_company')).data || {};
+    const { data: sl } = await sb.rpc('payroll_slip', { p_id: id });
+    if (!sl) return fail('Payslip not found, or you do not have access to payroll.');
+    const r = sl.run, e = sl.employee;
+    $d.textContent = '';
+    const hd = el('div', null, 'hd'), logo = el('img'); logo.src = 'logo.jpg'; logo.alt = '';
+    const c = el('div', null, 'co'); add(c, el('b', co.company_name || 'IKETECH AUTO LTD'), el('div', co.motto || '', 'motto'), el('div', [co.company_address, co.company_phone].filter(Boolean).join(' | ')));
+    const t = el('div', null, 'ttl'); add(t, el('b', 'PAYSLIP'), el('div', r.month), el('div', r.status));
+    add(hd, logo, c, t); $d.append(hd);
+    $d.append(add(el('p'), el('b', 'Employee: '), (e?.name || r.employee_id) + (e?.job_title ? ' · ' + e.job_title : '') + ' · ' + r.employee_id));
+    const tb = el('table'), row = (a, b, bold) => { const tr = el('tr'); const x = el('td', a), y = el('td', b, 'r'); if (bold) { x.style.fontWeight = y.style.fontWeight = 'bold'; } tr.append(x, y); tb.append(tr); };
+    const hr = (a) => { const tr = el('tr'), th = el('th', a); th.colSpan = 2; tr.append(th); tb.append(tr); };
+    hr('Earnings'); row('Basic salary', money(r.basic)); row('Allowances (housing, transport, other)', money(r.allowances)); if (+r.bonus) row('Bonus', money(r.bonus)); if (+r.commission) row('Commission', money(r.commission)); row('Gross pay', money(r.gross), true);
+    hr('Deductions'); row('Pension (employee)', money(r.pension_employee)); if (+r.nhf) row('Housing fund (NHF)', money(r.nhf)); row('PAYE tax', money(r.paye)); if (+r.advance_repayment) row('Advance repayment', money(r.advance_repayment)); if (+r.other_deduction) row('Other deduction', money(r.other_deduction));
+    row('NET PAY', money(r.net), true); $d.append(tb);
+    if (r.paid_on) $d.append(el('p', 'Paid on ' + r.paid_on + (r.payment_method ? ' by ' + r.payment_method : '') + (r.payment_reference ? ' · Ref ' + r.payment_reference : ''), null, 'font-size:12px'));
+    $d.append(el('p', 'Confidential. This payslip is for the named employee only.', null, 'font-size:11px;color:#667085'));
+    document.title = 'Payslip ' + r.month + ' ' + (e?.name || '');
+  } catch (e) { fail('Could not load: ' + (e.message || e)); }
+})();
+</script></body></html>
