@@ -1,0 +1,76 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Document</title><link rel="stylesheet" href="style.css"></head>
+<body style="background:#f1f5f4">
+<div class="bar"><button class="p" id="pdf">Download PDF</button><button class="p" id="print" style="background:#667085">Print</button></div>
+<div id="doc" class="sheet">Loading…</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="config.js"></script>
+<script>
+(async () => {
+  const $d = document.getElementById('doc');
+  const el = (tag, txt, cls, style) => { const e = document.createElement(tag); if (txt != null) e.textContent = txt; if (cls) e.className = cls; if (style) e.setAttribute('style', style); return e; };
+  const add = (p, ...k) => { k.flat().forEach(x => x != null && p.append(x.nodeType ? x : document.createTextNode(x))); return p; };
+  const SYM = { NGN: '₦', USD: '$', GBP: '£', EUR: '€' };
+  const money = (n, c) => (SYM[c] || (c || '') + ' ') + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fail = t => { $d.textContent = ''; $d.append(el('p', t, null, 'color:#c01048')); };
+  const P = new URLSearchParams(location.search), kind = P.get('k'), tok = P.get('t') || '';
+  let fileName = 'document';
+  document.getElementById('print').onclick = () => window.print();
+  document.getElementById('pdf').onclick = () => {
+    if (!window.html2pdf) return window.print();
+    const btn = document.querySelector('.bar'); btn.style.visibility = 'hidden';
+    html2pdf().set({ margin: 8, filename: fileName + '.pdf', image: { type: 'jpeg', quality: 0.95 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } }).from($d).save().then(() => btn.style.visibility = 'visible', () => { btn.style.visibility = 'visible'; window.print(); });
+  };
+  const ONES = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'], TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+  const below1000 = n => (n >= 100 ? ONES[Math.floor(n / 100)] + ' hundred' + (n % 100 ? ' and ' : '') : '') + (n % 100 < 20 ? ONES[n % 100] : TENS[Math.floor((n % 100) / 10)] + (n % 10 ? '-' + ONES[n % 10] : ''));
+  const words = n => { if (n === 0) return 'zero'; const parts = []; [[1e9, 'billion'], [1e6, 'million'], [1e3, 'thousand']].forEach(([d, w]) => { if (n >= d) { parts.push(below1000(Math.floor(n / d)) + ' ' + w); n %= d; } }); if (n > 0) parts.push(below1000(n)); return parts.join(', '); };
+  try {
+    const url = String(IKETECH.SUPABASE_URL).trim().replace(/^["']|["']$/g, ''), sb = supabase.createClient(new URL(url).origin, String(IKETECH.SUPABASE_ANON_KEY).trim());
+    if (!['quotation', 'invoice', 'receipt'].includes(kind)) return fail('This link is not valid.');
+    const { data: d, error } = await sb.rpc('public_document', { p_kind: kind, p_token: tok });
+    if (error || !d) return fail('This link is not valid or is no longer available. Please ask the workshop to send it again.');
+    const co = d.company || {}, cur = d.currency, body = [];
+    const title = { quotation: 'QUOTATION', invoice: 'INVOICE', receipt: 'PAYMENT RECEIPT' }[kind];
+    const lineTable = lines => { const tb = el('table'), th = el('tr'); ['#', 'Description', 'Qty', 'Unit price', 'Amount'].forEach((h, i) => th.append(el('th', h, i > 1 ? 'r' : ''))); tb.append(th); let total = 0;
+      (lines || []).forEach((l, i) => { const a = l.qty * l.unit_price; total += a; const tr = el('tr'); tr.append(el('td', i + 1), el('td', l.description), el('td', l.qty, 'r'), el('td', money(l.unit_price, cur), 'r'), el('td', money(a, cur), 'r')); tb.append(tr); });
+      const tt = el('tr', null, 'tot'); tt.append(el('td', ''), el('td', 'TOTAL'), el('td', ''), el('td', ''), el('td', money(total, cur), 'r')); tb.append(tt); return tb; };
+    const sec = (label, txt) => txt ? add(el('p'), el('b', label, null, 'color:#0f766e'), txt) : null;
+    if (kind === 'quotation') {
+      if (d.complaint) body.push(sec('Customer complaint: ', d.complaint));
+      if (d.diagnosis) body.push(sec('Diagnosis (confirmed by test): ', d.diagnosis));
+      const rl = (d.repairs || []).map(r => r.item + (r.action ? ' – ' + r.action : '')); if (d.recommended_solution) rl.unshift(d.recommended_solution);
+      if (rl.length) { const ul = el('ul', null, null, 'margin:4px 0 8px 18px;padding:0'); rl.forEach(x => ul.append(el('li', x))); body.push(add(el('p'), el('b', 'Recommended repair:', null, 'color:#0f766e')), ul); }
+      body.push(lineTable(d.lines));
+      if (cur === 'USD' && d.fx_rate) body.push(el('p', 'Exchange rate: ₦' + Number(d.fx_rate).toLocaleString() + ' per $1.', null, 'font-size:12px'));
+      if (d.valid_until) body.push(el('p', 'Valid until: ' + d.valid_until + (d.status === 'APPROVED' ? ' · Approved' : ''), null, 'font-size:12px'));
+      body.push(add(el('p', null, null, 'margin-top:12px'), 'To approve this quotation online, open the approval link the workshop sent you.'));
+    } else if (kind === 'invoice') {
+      body.push(sec('Customer complaint: ', d.complaint), lineTable(d.lines));
+      if (cur === 'USD' && d.fx_rate) body.push(el('p', 'Exchange rate: ₦' + Number(d.fx_rate).toLocaleString() + ' per $1. Naira equivalent: ₦' + (d.total * d.fx_rate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), null, 'font-size:12px'));
+      body.push(el('p', 'Issued: ' + (d.issue_date || '') + ' · Due: ' + (d.due_date || ''), null, 'font-size:12px'));
+      if ((d.payments || []).length) { body.push(el('h4', 'Payments received')); const pt = el('table'); d.payments.forEach(p => { const tr = el('tr'); tr.append(el('td', new Date(p.date).toLocaleDateString('en-GB')), el('td', p.method), el('td', money(p.amount, cur), 'r')); pt.append(tr); }); body.push(pt); }
+      const bal = el('p', null, null, 'text-align:right;font-size:15px'); add(bal, el('b', 'Balance due: ' + money(d.balance, cur))); body.push(bal);
+      if (Number(d.balance) > 0 && co.bank_details) body.push(el('h4', 'How to pay'), el('div', co.bank_details, null, 'white-space:pre-line'));
+      else if (Number(d.balance) <= 0) body.push(el('p', 'Paid in full. Thank you.', null, 'color:#0f766e;font-weight:bold'));
+    } else {
+      const amt = Number(d.amount), whole = Math.floor(amt), minor = Math.round((amt - whole) * 100), unit = { NGN: ['naira', 'kobo'], USD: ['dollars', 'cents'], GBP: ['pounds', 'pence'], EUR: ['euros', 'cents'] }[cur] || [cur, 'cents'];
+      const inWords = (words(whole) + ' ' + unit[0] + (minor ? ' and ' + words(minor) + ' ' + unit[1] : '') + ' only').replace(/^./, c => c.toUpperCase());
+      body.push(add(el('p', null, null, 'font-size:20px;margin:14px 0 4px'), el('b', 'Amount received: ' + money(amt, cur))), el('p', inWords, null, 'font-style:italic;margin-top:0'));
+      const tb = el('table'); [['Received on', new Date(d.paid_at).toLocaleString('en-GB')], ['Payment method', d.method + (d.reference ? ' · Ref ' + d.reference : '')], ['For invoice', d.invoice], ['Invoice total', money(d.invoice_total, cur)], ['Total paid to date', money(d.paid_to_date, cur)], ['Balance remaining', money(d.balance, cur)]]
+        .forEach(([a, b]) => { const tr = el('tr'); tr.append(el('td', a), el('td', b, 'r')); tb.append(tr); }); body.push(tb);
+      if (d.reversed) body.push(el('p', 'THIS PAYMENT HAS BEEN REVERSED AND THIS RECEIPT IS NOT VALID.', null, 'color:#c01048;font-weight:bold'));
+      else if (Number(d.balance) <= 0) body.push(el('p', 'Paid in full. Thank you for your business.', null, 'color:#0f766e;font-weight:bold'));
+    }
+    $d.textContent = '';
+    const hd = el('div', null, 'hd'), logo = el('img'); logo.src = 'logo.jpg'; logo.alt = ''; logo.crossOrigin = 'anonymous';
+    const c = el('div', null, 'co'); add(c, el('b', co.company_name || 'IKETECH AUTO LTD'), el('div', co.motto || '', 'motto'), el('div', [co.company_address, co.company_phone, co.company_email].filter(Boolean).join(' | ')));
+    const t = el('div', null, 'ttl'); add(t, el('b', title), el('div', d.number), el('div', new Date().toLocaleDateString('en-GB'))); add(hd, logo, c, t);
+    const info = el('table'), tr = el('tr'), l = el('td'), r = el('td'); add(l, el('b', 'Customer'), el('div', d.customer || ''), el('div', d.phone || '')); add(r, el('b', 'Vehicle'), el('div', d.vehicle || '')); tr.append(l, r); info.append(tr);
+    add($d, hd, info, body.filter(Boolean));
+    const terms = (co.terms || '').split('\n').filter(x => x.trim());
+    if (terms.length) { const tm = el('div', null, 'terms'); tm.append(el('b', 'TERMS AND CONDITIONS')); terms.forEach((x, i) => tm.append(el('div', (i + 1) + '. ' + x))); $d.append(tm); }
+    fileName = (title.toLowerCase().replace(/ /g, '-')) + '-' + d.number; document.title = title + ' ' + d.number;
+  } catch (e) { fail('Could not load: ' + (e.message || e)); }
+})();
+</script></body></html>

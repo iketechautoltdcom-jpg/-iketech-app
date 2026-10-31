@@ -88,8 +88,8 @@ function msgText(m, co, x) {
     case 'APPROVAL_RECEIVED': return `Hello ${n}, thank you for approving the repair on your ${v}. We will start work now.${track}`;
     case 'REPAIR_STARTED': return `Hello ${n}, work has started on your ${v}.${track}`;
     case 'REPAIRS_DONE': return `Hello ${n}, the repairs on your ${v} are complete. We are doing final quality checks.${track}`;
-    case 'INVOICE_ISSUED': return `Hello ${n}, your invoice ${m.ref} for the ${v} is ready${x.total ? ': total ' + x.total : ''}${x.balance ? ', balance due ' + x.balance : ''}.${co.bank_details ? ' Payment details: ' + co.bank_details.replace(/\n/g, ', ') + '.' : ''} Thank you.`;
-    case 'PAYMENT_RECEIVED': return `Hello ${n}, we have received your payment${x.paid ? ' of ' + x.paid : ''} for the ${v}. ${x.balance && x.balance !== '0' ? 'Balance remaining: ' + x.balance + '.' : 'Your account is fully paid.'} Thank you.`;
+    case 'INVOICE_ISSUED': return `Hello ${n}, your invoice ${m.ref} for the ${v} is ready${x.total ? ': total ' + x.total : ''}${x.balance ? ', balance due ' + x.balance : ''}.${x.link ? ' View and download it as PDF: ' + x.link + '.' : ''}${co.bank_details ? ' Payment details: ' + co.bank_details.replace(/\n/g, ', ') + '.' : ''} Thank you.`;
+    case 'PAYMENT_RECEIVED': return `Hello ${n}, we have received your payment${x.paid ? ' of ' + x.paid : ''} for the ${v}. ${x.balance && x.balance !== '0' ? 'Balance remaining: ' + x.balance + '.' : 'Your account is fully paid.'}${x.link ? ' Your receipt (download as PDF): ' + x.link : ''} Thank you.`;
     case 'READY': return `Hello ${n}, your ${v} is ready for collection at ${cn}${co.company_phone ? '. Call ' + co.company_phone + ' for any question' : ''}.`;
     case 'COLLECTED': return `Hello ${n}, thank you for choosing ${cn}. We hope you are happy with the work on your ${v}. If anything is not right, call us and we will fix it. If you know someone who needs a car repair, refer them to us.`;
     default: return `Hello ${n}, an update on your ${v}.`;
@@ -106,14 +106,14 @@ async function messages() {
     if (error) return list.append(msg('err', nice(error.message) + (/column|job_id|customers/.test(error.message) ? ' (Run file 14_customer_updates.sql in Supabase first.)' : '')));
     if (!data.length) return list.append(h('div', { class: 'card mut' }, 'Nothing waiting. Every customer is up to date.'));
     const jobs = [...new Set(data.map(m => m.job_id).filter(Boolean))], qids = data.filter(m => m.event === 'QUOTE_SENT').map(m => m.ref), iids = data.filter(m => m.event === 'INVOICE_ISSUED').map(m => m.ref), pids = data.filter(m => m.event === 'PAYMENT_RECEIVED').map(m => m.ref);
-    const [insp, qs, qt, it, pays] = await Promise.all([jobs.length ? sb.from('inspections').select('job_id,tracking_token').in('job_id', jobs) : { data: [] }, qids.length ? sb.from('quotations').select('id,approval_token,currency').in('id', qids) : { data: [] },
-      qids.length ? sb.from('v_quotation_totals').select('id,total').in('id', qids) : { data: [] }, iids.length || pids.length ? sb.from('v_invoice_status').select('id,total,balance,currency') : { data: [] }, pids.length ? sb.from('payments').select('id,amount,currency,invoice_id').in('id', pids) : { data: [] }]);
+    const [insp, qs, qt, it, pays, ivs] = await Promise.all([jobs.length ? sb.from('inspections').select('job_id,tracking_token').in('job_id', jobs) : { data: [] }, qids.length ? sb.from('quotations').select('id,approval_token,currency').in('id', qids) : { data: [] },
+      qids.length ? sb.from('v_quotation_totals').select('id,total').in('id', qids) : { data: [] }, iids.length || pids.length ? sb.from('v_invoice_status').select('id,total,balance,currency') : { data: [] }, pids.length ? sb.from('payments').select('id,amount,currency,invoice_id,receipt_token').in('id', pids) : { data: [] }, iids.length ? sb.from('invoices').select('id,view_token').in('id', iids) : { data: [] }]);
     const tok = {}; (insp.data || []).forEach(i => tok[i.job_id] = i.tracking_token);
     for (const m of data) {
       const x = {}; if (m.job_id && tok[m.job_id]) x.track = base + 'track.html?t=' + tok[m.job_id];
       if (m.event === 'QUOTE_SENT') { const q = (qs.data || []).find(y => y.id === m.ref), t = (qt.data || []).find(y => y.id === m.ref); if (q && q.approval_token) x.approve = base + 'approve.html?t=' + q.approval_token; if (q && t) x.total = money(t.total, q.currency); }
-      if (m.event === 'INVOICE_ISSUED') { const v = (it.data || []).find(y => y.id === m.ref); if (v) { x.total = money(v.total, v.currency); x.balance = money(v.balance, v.currency); } }
-      if (m.event === 'PAYMENT_RECEIVED') { const p = (pays.data || []).find(y => y.id === m.ref), v = p && (it.data || []).find(y => y.id === p.invoice_id); if (p) x.paid = money(p.amount, p.currency); if (v) x.balance = Number(v.balance) > 0 ? money(v.balance, v.currency) : '0'; }
+      if (m.event === 'INVOICE_ISSUED') { const v = (it.data || []).find(y => y.id === m.ref); if (v) { x.total = money(v.total, v.currency); x.balance = money(v.balance, v.currency); } const iv = (ivs.data || []).find(y => y.id === m.ref); if (iv) x.link = viewUrl('invoice', iv.view_token); }
+      if (m.event === 'PAYMENT_RECEIVED') { const p = (pays.data || []).find(y => y.id === m.ref), v = p && (it.data || []).find(y => y.id === p.invoice_id); if (p) { x.paid = money(p.amount, p.currency); if (p.receipt_token) x.link = viewUrl('receipt', p.receipt_token); } if (v) x.balance = Number(v.balance) > 0 ? money(v.balance, v.currency) : '0'; }
       const c = m.customers || {}, text = msgText(m, co, x), age = (Date.now() - new Date(m.created_at)) / 3600000, late = m.status === 'QUEUED' && age > 2;
       const done = async (ch, why) => { const { error: e } = await sb.rpc('mark_message_sent', { p_id: m.id, p_channel: ch, p_reason: why || null }); if (e) return alert(nice(e.message)); load(); };
       const wa = waNumber(c.phone), btns = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' });
@@ -590,6 +590,16 @@ async function team() {
 const baseUrl = () => location.href.replace(/[#?].*$/, '').replace(/[^/]*$/, '');
 const docUrl = (type, id) => baseUrl() + 'doc.html?type=' + type + '&id=' + encodeURIComponent(id);
 function waNumber(phone) { const d = String(phone || '').replace(/\D/g, ''); if (!d) return ''; if (d.startsWith('234')) return d; if (d.startsWith('0')) return '234' + d.slice(1); return d; }
+// a customer-facing link to a document (opens without sign-in, can be saved as PDF)
+const viewUrl = (kind, token) => baseUrl() + 'view.html?k=' + kind + '&t=' + token;
+function shareButtons(url, text, cust, subject) {
+  const row = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center' }), cm = h('span', { class: 'mut' });
+  row.append(h('button', { type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(url); cm.textContent = 'Link copied.'; } catch (e) { cm.textContent = url; } } }, 'Copy PDF link'),
+    h('a', { class: 'btn', href: url, target: '_blank', rel: 'noopener' }, 'Preview'));
+  const wa = waNumber((cust || {}).phone); if (wa) row.append(h('a', { class: 'btn p', href: 'https://wa.me/' + wa + '?text=' + encodeURIComponent(text + ' ' + url), target: '_blank', rel: 'noopener' }, 'Send on WhatsApp'));
+  if ((cust || {}).email) row.append(h('a', { class: 'btn', href: 'mailto:' + cust.email + '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(text + ' ' + url), rel: 'noopener' }, 'Send by email'));
+  row.append(cm); return row;
+}
 function printButton(type, id, label) { return h('a', { class: 'p', href: docUrl(type, id), target: '_blank', style: 'display:inline-block;text-decoration:none;color:#fff;background:var(--brand);border-radius:8px;padding:11px 16px;font-weight:600;margin:12px 8px 0 0' }, label || 'Print / PDF'); }
 
 async function settings() {
@@ -931,6 +941,7 @@ async function quotation(id) {
   }
   box.append(out); parts.push(box);
   parts.push(printButton('quotation', id));
+  if (q.status !== 'DRAFT' && q.approval_token && canQuote()) parts.push(h('div', { class: 'card' }, h('h3', {}, 'Quotation PDF link'), h('div', { class: 'mut' }, 'The customer opens this link without signing in and can download the quotation as a PDF.'), shareButtons(viewUrl('quotation', q.approval_token), 'Hello ' + (((q.jobs?.customers || {}).name || '').split(' ')[0] || 'there') + ', here is your quotation ' + q.id + ' from IKETECH AUTO LTD:', q.jobs?.customers, 'Your quotation ' + q.id + ' - IKETECH AUTO LTD')));
   if (['DRAFT', 'SENT'].includes(q.status) && canQuote()) {
     const link = baseUrl() + 'approve.html?t=' + q.approval_token, cust = q.jobs?.customers || {}, first = (cust.name || '').split(' ')[0] || 'there';
     const text = `Hello ${first}, your quotation ${q.id} from IKETECH AUTO LTD is ready (${money(lineTotal(lines), q.currency)}). Please review and approve it here: ${link}`;
@@ -969,7 +980,7 @@ async function fxCard() {
 }
 
 async function invoice(id) {
-  const { data: inv, error } = await sb.from('invoices').select('*, jobs(id,vehicles(registration,make,model),customers(name,phone))').eq('id', id).maybeSingle();
+  const { data: inv, error } = await sb.from('invoices').select('*, jobs(id,vehicles(registration,make,model),customers(name,phone,email))').eq('id', id).maybeSingle();
   if (error || !inv) return show(msg('err', 'Invoice not found.'));
   const [{ data: lines }, { data: pays }, { data: st }] = await Promise.all([
     sb.from('invoice_lines').select('*').eq('invoice_id', id).order('sort'), sb.from('payments').select('*').eq('invoice_id', id).order('created_at'),
@@ -989,13 +1000,14 @@ async function invoice(id) {
   if (canBill()) { if (inv.status === 'DRAFT') box.append(setStatus('Issue invoice', 'ISSUED'), setStatus('Cancel', 'CANCELLED', 'background:var(--bad)')); if (inv.status === 'ISSUED') box.append(setStatus('Cancel invoice', 'CANCELLED', 'background:var(--bad)')); }
   box.append(out); parts.push(box);
   parts.push(printButton('invoice', id, 'Print invoice / PDF'));
+  if (inv.status === 'ISSUED' && inv.view_token) parts.push(h('div', { class: 'card' }, h('h3', {}, 'Invoice PDF link'), h('div', { class: 'mut' }, 'The customer opens this link without signing in and can download the invoice as a PDF. It always shows the latest balance.'), shareButtons(viewUrl('invoice', inv.view_token), 'Hello ' + (((inv.jobs?.customers || {}).name || '').split(' ')[0] || 'there') + ', here is your invoice ' + inv.id + ' from IKETECH AUTO LTD:', inv.jobs?.customers, 'Your invoice ' + inv.id + ' - IKETECH AUTO LTD')));
 
   if (inv.status === 'ISSUED' || (pays || []).length) {
     const pbox = h('div', { class: 'card' }, h('h3', {}, 'Payments'), st ? h('div', {}, 'Paid ' + money(st.paid, cur) + ' of ' + money(st.total, cur) + ' · balance ' + money(st.balance, cur)) : '');
     const reversed = new Set((pays || []).filter(p => p.reverses).map(p => p.reverses)), pout = h('div');
     for (const p of pays || []) pbox.append(h('div', { class: 'row' },
-      h('span', {}, h('b', {}, money(p.amount, cur)), ' ' + p.method + (p.reference ? ' · ' + p.reference : ''), h('div', { class: 'mut' }, new Date(p.paid_at).toLocaleString() + (p.reason ? ' · ' + p.reason : '') + (reversed.has(p.id) ? ' · REVERSED' : ''))),
-      !p.reverses && !reversed.has(p.id) ? h('a', { class: 'btn', href: docUrl('receipt', p.id), target: '_blank', rel: 'noopener' }, 'Receipt') : '',
+      h('span', {}, h('b', {}, money(p.amount, cur)), ' ' + p.method + (p.reference ? ' · ' + p.reference : ''), h('div', { class: 'mut' }, new Date(p.paid_at).toLocaleString() + (p.reason ? ' · ' + p.reason : '') + (reversed.has(p.id) ? ' · REVERSED' : '')),
+        !p.reverses && !reversed.has(p.id) && p.receipt_token ? h('div', {}, h('div', { class: 'mut', style: 'margin-top:6px' }, 'Receipt:'), shareButtons(viewUrl('receipt', p.receipt_token), 'Hello, here is your payment receipt ' + p.id + ' from IKETECH AUTO LTD:', inv.jobs?.customers, 'Your payment receipt ' + p.id + ' - IKETECH AUTO LTD')) : ''),
       !p.reverses && !reversed.has(p.id) && can('ceo', 'manager', 'accounting') ? h('button', { type: 'button', style: 'color:var(--bad);background:none;border:0;cursor:pointer', onclick: async () => {
         const why = prompt('Why is this payment being reversed? (required)'); if (!why || why.trim().length < 5) return;
         const { error } = await sb.rpc('reverse_payment', { p_payment: p.id, p_reason: why.trim() }); if (error) return pout.append(msg('err', nice(error.message))); reload(); } }, 'Reverse') : ''));
