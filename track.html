@@ -1,6 +1,6 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Track your repair</title><link rel="stylesheet" href="style.css"></head>
-<body><header><img src="logo.jpg" alt="" style="height:34px;border-radius:4px"><b>IKETECH AUTO LTD</b><span id="motto" class="mut" style="font-style:italic;font-size:13px"></span></header><main id="app">Loading…</main>
+<body><header style="border-top:5px solid #0f766e"><img src="logo.jpg" alt="" style="height:34px;border-radius:4px"><b>IKETECH AUTO LTD</b><span id="motto" class="mut" style="font-style:italic;font-size:13px"></span></header><main id="app">Loading…</main>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
 <script src="config.js"></script>
 <script>
@@ -13,7 +13,7 @@
     const {data,error}=await sb.rpc('track_repair',{p_token:t});
     app.textContent='';
     if(error||!data){app.append(el('div','This link is not valid. Please ask the workshop to send it again.','card'));return}
-    const c=el('div',null,'card');c.append(el('h2',data.vehicle),el('div','Reference '+data.inspection,null));
+    const c=el('div',null,'card');c.append(el('h2',data.vehicle,null,'color:#0f766e'),el('div','Reference '+data.inspection,null));
     const ol=el('ol',null,'steps');
     for(const s of data.steps){const li=el('li',s.step,s.done?'done':'');ol.append(li)}
     c.append(ol);

@@ -18,17 +18,18 @@
     const co = q.company || {};
     const render = (done) => {
       app.textContent = '';
-      const hd = el('div', null, 'card', 'display:flex;gap:12px;align-items:center'), logo = el('img'); logo.src = 'logo.jpg'; logo.setAttribute('style', 'width:70px;border-radius:6px');
-      add(hd, logo, add(el('div'), el('b', co.company_name || 'IKETECH AUTO LTD', null, 'font-size:18px'), el('div', co.motto || '', 'mut', 'font-style:italic')));
+      const hd = el('div', null, 'card', 'display:flex;gap:12px;align-items:center;border-top:5px solid #0f766e'), logo = el('img'); logo.src = 'logo.jpg'; logo.setAttribute('style', 'width:70px;border-radius:6px');
+      add(hd, logo, add(el('div'), el('b', co.company_name || 'IKETECH AUTO LTD', null, 'font-size:18px;color:#0f766e'), el('div', co.motto || '', 'mut', 'font-style:italic;color:#0f766e')));
       app.append(hd);
-      const c = el('div', null, 'card'); add(c, el('h2', 'Quotation ' + q.number), el('div', 'Hello ' + (q.customer || '') + ', here is the quotation for your ' + q.vehicle + '.', 'mut'));
+      const c = el('div', null, 'card'); add(c, el('h2', 'Quotation ' + q.number, null, 'color:#0f766e'), el('div', 'Hello ' + (q.customer || '') + ', here is the quotation for your ' + q.vehicle + '.', 'mut'));
+      c.append(add(el('div', null, null, 'display:flex;justify-content:space-between;background:#0f766e;color:#fff;padding:7px 10px;border-radius:6px;margin-top:10px;font-size:13px;font-weight:bold'), el('span', 'Description'), el('span', 'Amount')));
       q.lines.forEach(l => c.append(add(el('div', null, 'row'), add(el('span'), el('b', l.description), el('div', l.type + ' · ' + l.qty + ' × ' + money(l.unit_price, q.currency), 'mut')), el('span', money(l.qty * l.unit_price, q.currency)))));
-      c.append(add(el('div', null, 'row'), el('b', 'Total'), el('b', money(q.total, q.currency))));
+      c.append(add(el('div', null, 'row', 'border-top:2px solid #0f766e'), el('b', 'Total', null, 'color:#0f766e'), el('b', money(q.total, q.currency), null, 'color:#0f766e')));
       if (q.currency === 'USD' && q.fx_rate) c.append(el('div', 'Exchange rate ₦' + Number(q.fx_rate).toLocaleString() + ' per $1. Naira equivalent ₦' + (q.total * q.fx_rate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), 'mut'));
       if (q.valid_until) c.append(el('div', 'Valid until ' + q.valid_until, 'mut'));
       app.append(c);
       const terms = (co.terms || '').split('\n').filter(x => x.trim());
-      if (terms.length) { const t = el('div', null, 'card', 'font-size:13px'); t.append(el('b', 'Terms and conditions')); terms.forEach((x, i) => t.append(el('div', (i + 1) + '. ' + x, 'mut'))); app.append(t); }
+      if (terms.length) { const t = el('div', null, 'card', 'font-size:13px'); t.append(el('b', 'TERMS AND CONDITIONS', null, 'color:#0f766e')); terms.forEach((x, i) => t.append(el('div', (i + 1) + '. ' + x, 'mut'))); app.append(t); }
       const act = el('div', null, 'card');
       if (done) act.append(el('p', done, 'okm'));
       else if (q.status === 'APPROVED') act.append(el('p', 'You approved this quotation. Thank you. The workshop will begin the work.', 'okm'));
@@ -40,7 +41,7 @@
         const go = d => async () => { out.textContent = ''; if (d === 'approve' && !agree.checked) return out.append(el('p', 'Please tick the box to confirm you have read the terms.', 'err'));
           const { error } = await sb.rpc('public_quotation_decide', { p_token: tok, p_decision: d, p_note: note.value.trim() || null });
           if (error) return out.append(el('p', error.message, 'err')); q.status = d === 'approve' ? 'APPROVED' : 'REJECTED'; render(d === 'approve' ? 'Thank you. Your approval has been recorded and the workshop has been notified.' : 'Your decision has been recorded. The workshop has been notified.'); };
-        const a = el('button', 'Approve quotation', 'p'), b = el('button', 'Decline', 'p', 'background:#667085;margin-left:8px'); a.onclick = go('approve'); b.onclick = go('decline');
+        const a = el('button', 'Approve quotation', 'p', 'background:#0f766e'), b = el('button', 'Decline', 'p', 'background:#667085;margin-left:8px'); a.onclick = go('approve'); b.onclick = go('decline');
         add(act, add(el('label'), agree, ' I have read and accept the terms and conditions'), el('label', 'Note (optional)'), note, a, b, out);
       }
       app.append(act);
