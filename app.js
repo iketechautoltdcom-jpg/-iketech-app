@@ -73,50 +73,81 @@ function home() {
   show(h('div', { class: 'hello' }, h('img', { src: 'logo.jpg', alt: '' }), h('div', {}, h('h2', {}, 'Hello, ' + me.full_name.split(' ')[0]), h('div', { class: 'mut' }, 'What would you like to do today?'))), h('div', { class: 'grid' }, tiles));
 }
 
-// ---- customer messages (queued by the database at each stage; staff send them with one click) ----
+// ---- customer messages: one at every stage from reception to delivery ----
+const MSG_LABEL = { JOB_RECEIVED: 'Vehicle received', CHECKIN: 'Inspection started', REPORT_READY: 'Inspection report ready', QUOTE_SENT: 'Quotation sent', APPROVAL_RECEIVED: 'Approval received', REPAIR_STARTED: 'Repair started',
+  REPAIRS_DONE: 'Repairs done', INVOICE_ISSUED: 'Invoice issued', PAYMENT_RECEIVED: 'Payment received', READY: 'Ready for collection', COLLECTED: 'Handed over - thank you' };
+const MSG_ORDER = Object.keys(MSG_LABEL);
+function msgText(m, co, x) {
+  const n = ((m.customers && m.customers.name) || 'customer').split(' ')[0], v = m.vehicles ? [m.vehicles.make, m.vehicles.model].filter(Boolean).join(' ') + (m.vehicles.registration ? ' (' + m.vehicles.registration + ')' : '') : 'vehicle';
+  const cn = co.company_name || 'IKETECH AUTO LTD', track = x.track ? ' Follow progress here: ' + x.track : '';
+  switch (m.event) {
+    case 'JOB_RECEIVED': return `Hello ${n}, we have received your ${v} at ${cn}. Job number ${m.job_id}. We will keep you updated at every step.${track}`;
+    case 'CHECKIN': return `Hello ${n}, the inspection of your ${v} has started. We do not guess faults, we diagnose them properly.${track}`;
+    case 'REPORT_READY': return `Hello ${n}, the inspection report for your ${v} is ready.${track}`;
+    case 'QUOTE_SENT': return `Hello ${n}, your quotation ${m.ref} for the ${v} is ready${x.total ? ' (total ' + x.total + ')' : ''}. Please review and approve it here: ${x.approve || '(open the quotation page to copy the approval link)'}`;
+    case 'APPROVAL_RECEIVED': return `Hello ${n}, thank you for approving the repair on your ${v}. We will start work now.${track}`;
+    case 'REPAIR_STARTED': return `Hello ${n}, work has started on your ${v}.${track}`;
+    case 'REPAIRS_DONE': return `Hello ${n}, the repairs on your ${v} are complete. We are doing final quality checks.${track}`;
+    case 'INVOICE_ISSUED': return `Hello ${n}, your invoice ${m.ref} for the ${v} is ready${x.total ? ': total ' + x.total : ''}${x.balance ? ', balance due ' + x.balance : ''}.${co.bank_details ? ' Payment details: ' + co.bank_details.replace(/\n/g, ', ') + '.' : ''} Thank you.`;
+    case 'PAYMENT_RECEIVED': return `Hello ${n}, we have received your payment${x.paid ? ' of ' + x.paid : ''} for the ${v}. ${x.balance && x.balance !== '0' ? 'Balance remaining: ' + x.balance + '.' : 'Your account is fully paid.'} Thank you.`;
+    case 'READY': return `Hello ${n}, your ${v} is ready for collection at ${cn}${co.company_phone ? '. Call ' + co.company_phone + ' for any question' : ''}.`;
+    case 'COLLECTED': return `Hello ${n}, thank you for choosing ${cn}. We hope you are happy with the work on your ${v}. If anything is not right, call us and we will fix it. If you know someone who needs a car repair, refer them to us.`;
+    default: return `Hello ${n}, an update on your ${v}.`;
+  }
+}
 async function messages() {
   const co = (await sb.rpc('public_company')).data || {}, base = location.href.replace(/[#?].*$/, '').replace(/[^/]*$/, '');
   const list = h('div'), showAll = h('input', { type: 'checkbox' });
-  const TXT = {
-    CHECKIN: (n, v, l) => `Hello ${n}, we have received your ${v} at ${co.company_name || 'IKETECH AUTO LTD'} and the inspection has started. Follow progress here: ${l}`,
-    REPORT_READY: (n, v, l) => `Hello ${n}, the inspection report for your ${v} is ready. Please see the findings and progress here: ${l}`,
-    APPROVAL_RECEIVED: (n, v, l) => `Hello ${n}, thank you for approving the repair on your ${v}. We will start work now. Follow progress here: ${l}`,
-    REPAIR_STARTED: (n, v, l) => `Hello ${n}, work has started on your ${v}. Follow progress here: ${l}`,
-    REPAIRS_DONE: (n, v, l) => `Hello ${n}, the repairs on your ${v} are complete. We are doing final checks. Details: ${l}`,
-    READY: (n, v, l) => `Hello ${n}, your ${v} is ready for collection at ${co.company_name || 'IKETECH AUTO LTD'}${co.company_phone ? '. Call ' + co.company_phone + ' for any question' : ''}. Details: ${l}`
-  };
-  const LABEL = { CHECKIN: 'Vehicle received', REPORT_READY: 'Report ready', APPROVAL_RECEIVED: 'Approval received', REPAIR_STARTED: 'Repair started', REPAIRS_DONE: 'Repairs done', READY: 'Ready for collection' };
   async function load() {
     list.textContent = '';
-    let req = sb.from('customer_messages').select('id,event,status,channel,created_at,inspection_id,inspections(tracking_token,vehicles(registration,make,model),customers(name,phone,email))').order('created_at', { ascending: false }).limit(80);
+    let req = sb.from('customer_messages').select('id,event,status,channel,skip_reason,created_at,ref,job_id,inspection_id,customers(name,phone,email),vehicles(registration,make,model)').order('created_at', { ascending: false }).limit(100);
     if (!showAll.checked) req = req.eq('status', 'QUEUED');
     const { data, error } = await req;
-    if (error) return list.append(msg('err', nice(error.message)));
-    if (!data.length) return list.append(h('div', { class: 'card mut' }, 'Nothing waiting. New updates appear here as vehicles move through the workshop.'));
+    if (error) return list.append(msg('err', nice(error.message) + (/column|job_id|customers/.test(error.message) ? ' (Run file 14_customer_updates.sql in Supabase first.)' : '')));
+    if (!data.length) return list.append(h('div', { class: 'card mut' }, 'Nothing waiting. Every customer is up to date.'));
+    const jobs = [...new Set(data.map(m => m.job_id).filter(Boolean))], qids = data.filter(m => m.event === 'QUOTE_SENT').map(m => m.ref), iids = data.filter(m => m.event === 'INVOICE_ISSUED').map(m => m.ref), pids = data.filter(m => m.event === 'PAYMENT_RECEIVED').map(m => m.ref);
+    const [insp, qs, qt, it, pays] = await Promise.all([jobs.length ? sb.from('inspections').select('job_id,tracking_token').in('job_id', jobs) : { data: [] }, qids.length ? sb.from('quotations').select('id,approval_token,currency').in('id', qids) : { data: [] },
+      qids.length ? sb.from('v_quotation_totals').select('id,total').in('id', qids) : { data: [] }, iids.length || pids.length ? sb.from('v_invoice_status').select('id,total,balance,currency') : { data: [] }, pids.length ? sb.from('payments').select('id,amount,currency,invoice_id').in('id', pids) : { data: [] }]);
+    const tok = {}; (insp.data || []).forEach(i => tok[i.job_id] = i.tracking_token);
     for (const m of data) {
-      const i = m.inspections || {}, c = i.customers || {}, v = i.vehicles || {};
-      const veh = [v.make, v.model].filter(Boolean).join(' ') + (v.registration ? ' (' + v.registration + ')' : '');
-      const link = base + 'track.html?t=' + i.tracking_token;
-      const text = (TXT[m.event] || TXT.CHECKIN)((c.name || 'customer').split(' ')[0], veh, link);
-      const done = async ch => { const { error: e } = await sb.rpc('mark_message_sent', { p_id: m.id, p_channel: ch }); if (e) return alert(nice(e.message)); load(); };
+      const x = {}; if (m.job_id && tok[m.job_id]) x.track = base + 'track.html?t=' + tok[m.job_id];
+      if (m.event === 'QUOTE_SENT') { const q = (qs.data || []).find(y => y.id === m.ref), t = (qt.data || []).find(y => y.id === m.ref); if (q && q.approval_token) x.approve = base + 'approve.html?t=' + q.approval_token; if (q && t) x.total = money(t.total, q.currency); }
+      if (m.event === 'INVOICE_ISSUED') { const v = (it.data || []).find(y => y.id === m.ref); if (v) { x.total = money(v.total, v.currency); x.balance = money(v.balance, v.currency); } }
+      if (m.event === 'PAYMENT_RECEIVED') { const p = (pays.data || []).find(y => y.id === m.ref), v = p && (it.data || []).find(y => y.id === p.invoice_id); if (p) x.paid = money(p.amount, p.currency); if (v) x.balance = Number(v.balance) > 0 ? money(v.balance, v.currency) : '0'; }
+      const c = m.customers || {}, text = msgText(m, co, x), age = (Date.now() - new Date(m.created_at)) / 3600000, late = m.status === 'QUEUED' && age > 2;
+      const done = async (ch, why) => { const { error: e } = await sb.rpc('mark_message_sent', { p_id: m.id, p_channel: ch, p_reason: why || null }); if (e) return alert(nice(e.message)); load(); };
       const wa = waNumber(c.phone), btns = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' });
       if (m.status === 'QUEUED') {
         if (wa) { const a = h('a', { class: 'btn p', href: 'https://wa.me/' + wa + '?text=' + encodeURIComponent(text), target: '_blank', rel: 'noopener' }, 'Send on WhatsApp'); a.onclick = () => setTimeout(() => done('WHATSAPP'), 600); btns.append(a); }
-        if (c.email) { const a = h('a', { class: 'btn', href: 'mailto:' + encodeURIComponent(c.email).replace('%40', '@') + '?subject=' + encodeURIComponent((co.company_name || 'IKETECH AUTO LTD') + ' - ' + LABEL[m.event]) + '&body=' + encodeURIComponent(text), target: '_blank', rel: 'noopener' }, 'Send by email'); a.onclick = () => setTimeout(() => done('EMAIL'), 600); btns.append(a); }
-        if (!wa && !c.email) btns.append(h('span', { class: 'err' }, 'This customer has no phone or email saved.'));
-        const sk = h('button', { type: 'button' }, 'Skip'); sk.onclick = () => done('SKIPPED'); btns.append(sk);
+        if (c.email) { const a = h('a', { class: 'btn', href: 'mailto:' + c.email + '?subject=' + encodeURIComponent((co.company_name || 'IKETECH AUTO LTD') + ' - ' + MSG_LABEL[m.event]) + '&body=' + encodeURIComponent(text), target: '_blank', rel: 'noopener' }, 'Send by email'); a.onclick = () => setTimeout(() => done('EMAIL'), 600); btns.append(a); }
+        const cl = h('button', { type: 'button' }, 'I called them'); cl.onclick = () => done('CALL'); btns.append(cl);
+        if (!wa && !c.email) btns.append(h('span', { class: 'err' }, 'No phone or email saved for this customer.'));
+        const sk = h('button', { type: 'button' }, 'Skip...'); sk.onclick = () => { const why = prompt('Why skip this message? (for example: told the customer in person)'); if (why && why.trim().length >= 3) done('SKIPPED', why.trim()); }; btns.append(sk);
       }
-      list.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, LABEL[m.event] || m.event), h('span', { class: 'pill' }, m.status + (m.channel && m.status === 'SENT' ? ' · ' + m.channel : ''))),
-        h('div', { class: 'mut' }, (c.name || '') + ' · ' + veh + ' · ', h('a', { href: '#insp/' + m.inspection_id }, m.inspection_id)),
-        h('div', { style: 'margin-top:6px;font-size:13px;white-space:pre-wrap' }, text), btns));
+      list.append(h('div', { class: 'card', style: late ? 'border-left:5px solid var(--bad)' : '' }, h('div', { class: 'row' }, h('b', {}, MSG_LABEL[m.event] || m.event), h('span', { class: 'pill' }, m.status + (m.channel && m.status === 'SENT' ? ' · ' + m.channel.toLowerCase() : ''))),
+        h('div', { class: 'mut' }, (c.name || '') + ' · ' + (m.job_id ? 'job ' + m.job_id : '') + ' · ' + new Date(m.created_at).toLocaleString()), late ? h('div', { class: 'err' }, 'Waiting for ' + Math.floor(age) + ' hours. The customer should have been told by now.') : '',
+        m.skip_reason ? h('div', { class: 'mut' }, 'Skipped: ' + m.skip_reason) : '', h('div', { style: 'margin-top:6px;font-size:13px;white-space:pre-wrap' }, text), btns));
     }
   }
   showAll.onchange = load;
   show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Messages to customers'),
-    h('div', { class: 'mut' }, 'Each update is written for you. Tap a button, your WhatsApp or email opens with the message ready, then just press send.'),
+    h('div', { class: 'mut' }, 'A message is prepared at every stage, from the day the vehicle arrives to the day it leaves. Tap a button, your WhatsApp or email opens with the message ready, then press send. A message can only be skipped with a reason, and a vehicle cannot be handed over until the customer has been told it is ready.'),
     h('label', {}, showAll, ' Show sent and skipped too'), list, h('div', { id: 'fu' }));
   load();
   followupsBox(co).then(b => { const t = document.getElementById('fu'); if (t) t.append(b); });
+}
+
+// ---- customer updates timeline on the job page ----
+async function updatesCard(j) {
+  if (!can('ceo', 'manager', 'admin', 'supervisor', 'advisor', 'receptionist')) return '';
+  const { data } = await sb.from('customer_messages').select('event,status,channel,created_at').eq('job_id', j.id);
+  const by = {}; (data || []).forEach(m => { (by[m.event] = by[m.event] || []).push(m); });
+  const box = h('div', { class: 'card' }, h('h3', {}, 'Customer updates'), h('div', { class: 'mut' }, 'Has the customer been told at each stage?'));
+  for (const e of MSG_ORDER) { const ms = by[e]; if (!ms && ['PAYMENT_RECEIVED', 'COLLECTED', 'INVOICE_ISSUED', 'QUOTE_SENT'].includes(e)) continue;
+    const st = !ms ? 'not due yet' : ms.every(x => x.status === 'SENT') ? 'sent' : ms.some(x => x.status === 'QUEUED') ? 'WAITING TO BE SENT' : 'skipped';
+    box.append(h('div', { class: 'row' }, h('span', {}, MSG_LABEL[e]), h('span', { class: st === 'WAITING TO BE SENT' ? 'err' : st === 'sent' ? 'okm' : 'mut', style: 'margin:0' }, st))); }
+  box.append(h('a', { href: '#messages' }, 'Open Messages →'));
+  return box;
 }
 
 // ---- payroll (CEO and people the CEO allows; every action goes through database functions) ----
@@ -259,7 +290,7 @@ async function dashboard() {
       h('div', { class: 'grid', style: 'margin-top:10px' }, tile('Vehicles in', d.jobs_in, 'new jobs'), tile('Vehicles out', d.jobs_out, 'collected'), tile('Ready, not collected', d.ready_not_collected, 'customers to call', d.ready_not_collected > 0),
         tile('Quotations waiting', d.quotes_waiting, 'customer has not answered'), tile('Quotation approval rate', conv === null ? '-' : conv + '%', d.quotes_approved + ' of ' + d.quotes_sent + ' sent'), tile('Quality checks passed', qcT ? Math.round(100 * d.qc_pass / qcT) + '%' : '-', d.qc_fail + ' failed (rework)', d.qc_fail > 0)),
       h('div', { class: 'grid', style: 'margin-top:10px' }, tile('Inspections', d.inspections, d.inspections_waiting_review + ' waiting for review', d.inspections_waiting_review > 0), tile('Referral rewards owed', mny(d.referral_owed), 'earned, not yet paid'),
-        tile('Customer messages waiting', d.messages_waiting, 'to be sent', d.messages_waiting > 0)));
+        tile('Customer messages waiting', d.messages_waiting, (d.messages_overdue || 0) + ' waiting over 2 hours', (d.messages_overdue || 0) > 0)));
     const st = Object.entries(d.jobs_by_status || {});
     body.append(h('div', { class: 'card', style: 'margin-top:10px' }, h('h3', {}, 'Jobs in the workshop now'), st.length ? st.map(([k, v]) => h('div', { class: 'row' }, h('span', {}, k.replace(/_/g, ' ')), h('b', {}, String(v)))) : h('div', { class: 'mut' }, 'No open jobs.')));
     body.append(h('div', { class: 'card' }, h('h3', {}, 'By branch'), (d.branches || []).map(b => h('div', { class: 'row' }, h('span', {}, b.name, h('div', { class: 'mut' }, (b.country || '') + ' · ' + b.jobs_in + ' new jobs · ' + b.open_jobs + ' open')), h('b', {}, mny(b.collected))))));
@@ -499,7 +530,7 @@ async function job(arg) {
     editable ? h('div', { class: 'card' }, field('Status', st), field('Diagnosis', diag),
       h('label', {}, conf, ' Diagnosis is confirmed by a test (only confirmed diagnoses go on quotations)'), field('Recommended solution', sol), save, out)
       : h('div', { class: 'card' }, h('div', {}, 'Status: ' + j.status.replace(/_/g, ' '))),
-    await jobBilling(j), await qcCard(j), await costCard(j));
+    await jobBilling(j), await qcCard(j), await costCard(j), await updatesCard(j));
 }
 
 async function newJob(vehicleId) {
