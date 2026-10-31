@@ -50,7 +50,7 @@ window.addEventListener('hashchange', () => me && route());
 // ---- routing ----
 function route() {
   const [page, arg] = (location.hash.slice(1) || 'home').split('/');
-  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, settings, branches, team }[page] || home)(arg);
+  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, messages, settings, branches, team }[page] || home)(arg);
 }
 
 function home() {
@@ -60,9 +60,55 @@ function home() {
   tiles.push(t('#inspections', 'Inspections', can('technician') ? 'Your vehicle inspections' : 'Vehicle inspections and reports'));
   if (can('ceo','manager','admin','supervisor','advisor','receptionist','accounting')) tiles.push(t('#quotations', 'Quotations', 'Prices for customers to approve'));
   if (can('ceo','manager','admin','advisor','receptionist','accounting')) tiles.push(t('#invoices', 'Invoices & payments', 'Bills, payments and balances'));
+  if (can('ceo','manager','admin','supervisor','advisor','receptionist')) tiles.push(t('#messages', 'Messages', 'Updates waiting to be sent to customers'));
   tiles.push(t('#jobs', 'Jobs', can('technician') ? 'Your assigned jobs' : 'Open and recent jobs'));
   if (can('ceo')) tiles.push(t('#settings', 'Business settings', 'Name, motto, terms, bank details'), t('#branches', 'Branches', 'Add and manage branches'), t('#team', 'Team', 'Roles and access'));
   show(h('h2', {}, 'Hello, ' + me.full_name.split(' ')[0]), h('div', { class: 'grid' }, tiles));
+}
+
+// ---- customer messages (queued by the database at each stage; staff send them with one click) ----
+async function messages() {
+  const co = (await sb.rpc('public_company')).data || {}, base = location.href.replace(/[#?].*$/, '').replace(/[^/]*$/, '');
+  const list = h('div'), showAll = h('input', { type: 'checkbox' });
+  const TXT = {
+    CHECKIN: (n, v, l) => `Hello ${n}, we have received your ${v} at ${co.company_name || 'IKETECH AUTO LTD'} and the inspection has started. Follow progress here: ${l}`,
+    REPORT_READY: (n, v, l) => `Hello ${n}, the inspection report for your ${v} is ready. Please see the findings and progress here: ${l}`,
+    APPROVAL_RECEIVED: (n, v, l) => `Hello ${n}, thank you for approving the repair on your ${v}. We will start work now. Follow progress here: ${l}`,
+    REPAIR_STARTED: (n, v, l) => `Hello ${n}, work has started on your ${v}. Follow progress here: ${l}`,
+    REPAIRS_DONE: (n, v, l) => `Hello ${n}, the repairs on your ${v} are complete. We are doing final checks. Details: ${l}`,
+    READY: (n, v, l) => `Hello ${n}, your ${v} is ready for collection at ${co.company_name || 'IKETECH AUTO LTD'}${co.company_phone ? '. Call ' + co.company_phone + ' for any question' : ''}. Details: ${l}`
+  };
+  const LABEL = { CHECKIN: 'Vehicle received', REPORT_READY: 'Report ready', APPROVAL_RECEIVED: 'Approval received', REPAIR_STARTED: 'Repair started', REPAIRS_DONE: 'Repairs done', READY: 'Ready for collection' };
+  async function load() {
+    list.textContent = '';
+    let req = sb.from('customer_messages').select('id,event,status,channel,created_at,inspection_id,inspections(tracking_token,vehicles(registration,make,model),customers(name,phone,email))').order('created_at', { ascending: false }).limit(80);
+    if (!showAll.checked) req = req.eq('status', 'QUEUED');
+    const { data, error } = await req;
+    if (error) return list.append(msg('err', nice(error.message)));
+    if (!data.length) return list.append(h('div', { class: 'card mut' }, 'Nothing waiting. New updates appear here as vehicles move through the workshop.'));
+    for (const m of data) {
+      const i = m.inspections || {}, c = i.customers || {}, v = i.vehicles || {};
+      const veh = [v.make, v.model].filter(Boolean).join(' ') + (v.registration ? ' (' + v.registration + ')' : '');
+      const link = base + 'track.html?t=' + i.tracking_token;
+      const text = (TXT[m.event] || TXT.CHECKIN)((c.name || 'customer').split(' ')[0], veh, link);
+      const done = async ch => { const { error: e } = await sb.rpc('mark_message_sent', { p_id: m.id, p_channel: ch }); if (e) return alert(nice(e.message)); load(); };
+      const wa = waNumber(c.phone), btns = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' });
+      if (m.status === 'QUEUED') {
+        if (wa) { const a = h('a', { class: 'btn p', href: 'https://wa.me/' + wa + '?text=' + encodeURIComponent(text), target: '_blank', rel: 'noopener' }, 'Send on WhatsApp'); a.onclick = () => setTimeout(() => done('WHATSAPP'), 600); btns.append(a); }
+        if (c.email) { const a = h('a', { class: 'btn', href: 'mailto:' + encodeURIComponent(c.email).replace('%40', '@') + '?subject=' + encodeURIComponent((co.company_name || 'IKETECH AUTO LTD') + ' - ' + LABEL[m.event]) + '&body=' + encodeURIComponent(text), target: '_blank', rel: 'noopener' }, 'Send by email'); a.onclick = () => setTimeout(() => done('EMAIL'), 600); btns.append(a); }
+        if (!wa && !c.email) btns.append(h('span', { class: 'err' }, 'This customer has no phone or email saved.'));
+        const sk = h('button', { type: 'button' }, 'Skip'); sk.onclick = () => done('SKIPPED'); btns.append(sk);
+      }
+      list.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, LABEL[m.event] || m.event), h('span', { class: 'pill' }, m.status + (m.channel && m.status === 'SENT' ? ' · ' + m.channel : ''))),
+        h('div', { class: 'mut' }, (c.name || '') + ' · ' + veh + ' · ', h('a', { href: '#insp/' + m.inspection_id }, m.inspection_id)),
+        h('div', { style: 'margin-top:6px;font-size:13px;white-space:pre-wrap' }, text), btns));
+    }
+  }
+  showAll.onchange = load;
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Messages to customers'),
+    h('div', { class: 'mut' }, 'Each update is written for you. Tap a button, your WhatsApp or email opens with the message ready, then just press send.'),
+    h('label', {}, showAll, ' Show sent and skipped too'), list);
+  load();
 }
 
 // ---- customers ----
