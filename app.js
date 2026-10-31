@@ -50,17 +50,21 @@ window.addEventListener('hashchange', () => me && route());
 // ---- routing ----
 function route() {
   const [page, arg] = (location.hash.slice(1) || 'home').split('/');
-  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, messages, payroll, settings, branches, team }[page] || home)(arg);
+  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, messages, payroll, dashboard, credit, referrals, technicians, settings, branches, team }[page] || home)(arg);
 }
 
 function home() {
   const t = (href, title, sub) => h('a', { class: 'tile', href }, title, h('small', {}, sub));
   const tiles = [];
+  if (can('ceo','manager')) tiles.push(t('#dashboard', 'CEO dashboard', 'Money, jobs, quality and branches at a glance'));
   if (can('ceo','manager','admin','advisor','receptionist')) tiles.push(t('#customers', 'Customers', 'Add and find customers and vehicles'));
   tiles.push(t('#inspections', 'Inspections', can('technician') ? 'Your vehicle inspections' : 'Vehicle inspections and reports'));
   if (can('ceo','manager','admin','supervisor','advisor','receptionist','accounting')) tiles.push(t('#quotations', 'Quotations', 'Prices for customers to approve'));
   if (can('ceo','manager','admin','advisor','receptionist','accounting')) tiles.push(t('#invoices', 'Invoices & payments', 'Bills, payments and balances'));
   if (can('ceo','manager','admin','supervisor','advisor','receptionist')) tiles.push(t('#messages', 'Messages', 'Updates waiting to be sent to customers'));
+  if (can('ceo','manager','admin','accounting','advisor')) tiles.push(t('#credit', 'Credit control', 'Who owes us, how long, and reminders'));
+  if (can('ceo','manager','admin','accounting')) tiles.push(t('#referrals', 'Referrals', 'Referrers and the rewards they have earned'));
+  if (can('ceo','manager','supervisor')) tiles.push(t('#technicians', 'Technicians', 'Workload, quality and speed'));
   tiles.push(t('#jobs', 'Jobs', can('technician') ? 'Your assigned jobs' : 'Open and recent jobs'));
   if (can('ceo') || me.can_see_payroll) tiles.push(t('#payroll', 'Payroll', 'Staff pay, advances and payslips (private)'));
   if (can('ceo')) tiles.push(t('#settings', 'Business settings', 'Name, motto, terms, bank details'), t('#branches', 'Branches', 'Add and manage branches'), t('#team', 'Team', 'Roles and access'));
@@ -201,6 +205,144 @@ async function payroll(tab) {
   draw();
 }
 
+// ---- quality check (on the job page) ----
+const QC_ITEMS = [['road_test', 'Road test done and drives properly'], ['faults', 'Warning lights off and fault codes cleared'], ['leaks', 'No leaks (oil, coolant, fuel, brake fluid)'], ['torque', 'Wheels, nuts and bolts tightened'],
+  ['fluids', 'Fluids topped up to the right level'], ['complaint', 'The customer complaint is fixed'], ['old_parts', 'Old parts kept or shown to the customer'], ['clean', 'Vehicle cleaned, no grease marks, items put back']];
+async function qcCard(j) {
+  if (!can('ceo', 'manager', 'admin', 'supervisor', 'advisor')) return '';
+  const { data: hist } = await sb.from('qc_checks').select('result,notes,checked_at,checked_by').eq('job_id', j.id).order('checked_at', { ascending: false });
+  const box = h('div', { class: 'card' }, h('h3', {}, 'Quality check')), out = h('div');
+  const last = (hist || [])[0];
+  box.append(h('div', { class: 'mut' }, last ? 'Latest result: ' + last.result + ' on ' + new Date(last.checked_at).toLocaleDateString() + (last.notes ? ' - ' + last.notes : '') : 'No quality check yet. A vehicle cannot be marked ready until one is passed.'));
+  if (can('ceo', 'manager', 'supervisor') && !['COLLECTED', 'CANCELLED'].includes(j.status)) {
+    const ck = {}, list = h('div'), nt = h('input', { placeholder: 'If anything fails, say what' });
+    QC_ITEMS.forEach(([k, l]) => { ck[k] = h('input', { type: 'checkbox' }); list.append(h('label', { style: 'display:block;margin:6px 0' }, ck[k], ' ' + l)); });
+    const go = h('button', { class: 'p', type: 'button' }, 'Record quality check');
+    go.onclick = async () => {
+      out.textContent = ''; const checks = {}; QC_ITEMS.forEach(([k]) => checks[k] = ck[k].checked);
+      const { data, error } = await sb.rpc('record_qc', { p_job: j.id, p_checks: checks, p_notes: nt.value });
+      if (error) return out.append(msg('err', nice(error.message)));
+      out.append(msg(data === 'PASS' ? 'okm' : 'err', data === 'PASS' ? 'Passed. The vehicle can now be marked ready.' : 'Failed. The job went back to repair.')); setTimeout(() => job(j.id), 1200);
+    };
+    box.append(list, field('Notes', nt), go, out);
+  }
+  if ((hist || []).length > 1) box.append(h('div', { class: 'mut', style: 'margin-top:8px' }, 'Earlier: ' + hist.slice(1).map(x => x.result + ' ' + new Date(x.checked_at).toLocaleDateString()).join(' · ')));
+  return box;
+}
+
+// ---- referrer on the customer page ----
+async function referrerCard(c) {
+  if (!can('ceo', 'manager', 'admin', 'advisor', 'receptionist')) return '';
+  const { data: refs } = await sb.from('referrers').select('id,name,phone').eq('is_active', true).order('name');
+  const sel = h('select', {}, h('option', { value: '' }, 'Not referred'), (refs || []).map(r => h('option', { value: r.id, selected: c.referred_by === r.id }, r.name + (r.phone ? ' (' + r.phone + ')' : '')))), out = h('div'), b = h('button', { type: 'button' }, 'Save');
+  b.onclick = async () => { out.textContent = ''; const { error } = await sb.from('customers').update({ referred_by: sel.value || null }).eq('id', c.id); out.append(error ? msg('err', nice(error.message)) : msg('okm', 'Saved.')); };
+  return h('div', { class: 'card' }, h('h3', {}, 'Referred by'), h('div', { class: 'mut' }, 'The referrer earns a reward when this customer pays an invoice in full.'), sel, b, out);
+}
+
+// ---- CEO dashboard ----
+async function dashboard() {
+  if (!can('ceo', 'manager')) return show(msg('err', 'The dashboard is for the CEO and managers.'));
+  const today = new Date().toISOString().slice(0, 10), first = today.slice(0, 8) + '01';
+  const from = h('input', { type: 'date', value: first }), to = h('input', { type: 'date', value: today }), body = h('div');
+  const mny = o => { const k = Object.keys(o || {}); return k.length ? k.map(c => money(o[c], c)).join(' + ') : '0'; };
+  const tile = (label, value, sub, warn) => h('div', { class: 'tile', style: warn ? 'border-color:#c01048' : '' }, h('small', {}, label), h('b', { style: 'font-size:20px;display:block;margin:4px 0' }, String(value)), sub ? h('small', {}, sub) : '');
+  async function draw() {
+    body.textContent = '';
+    const { data: d, error } = await sb.rpc('ceo_dashboard', { p_from: from.value, p_to: to.value });
+    if (error) return body.append(msg('err', nice(error.message) + (/ceo_dashboard/.test(error.message) ? ' (Run file 12_operations.sql in Supabase first.)' : '')));
+    const qcT = d.qc_pass + d.qc_fail, conv = d.quotes_sent ? Math.round(100 * d.quotes_approved / d.quotes_sent) : null;
+    body.append(h('div', { class: 'grid' }, tile('Money collected', mny(d.collected), 'in this period'), tile('Invoiced', mny(d.invoiced), 'issued in this period'), tile('Still owed to us', mny(d.outstanding), 'all open invoices'),
+      tile('Overdue', mny(d.overdue), 'past the due date', Object.keys(d.overdue || {}).length > 0)),
+      h('div', { class: 'grid', style: 'margin-top:10px' }, tile('Vehicles in', d.jobs_in, 'new jobs'), tile('Vehicles out', d.jobs_out, 'collected'), tile('Ready, not collected', d.ready_not_collected, 'customers to call', d.ready_not_collected > 0),
+        tile('Quotations waiting', d.quotes_waiting, 'customer has not answered'), tile('Quotation approval rate', conv === null ? '-' : conv + '%', d.quotes_approved + ' of ' + d.quotes_sent + ' sent'), tile('Quality checks passed', qcT ? Math.round(100 * d.qc_pass / qcT) + '%' : '-', d.qc_fail + ' failed (rework)', d.qc_fail > 0)),
+      h('div', { class: 'grid', style: 'margin-top:10px' }, tile('Inspections', d.inspections, d.inspections_waiting_review + ' waiting for review', d.inspections_waiting_review > 0), tile('Referral rewards owed', mny(d.referral_owed), 'earned, not yet paid'),
+        tile('Customer messages waiting', d.messages_waiting, 'to be sent', d.messages_waiting > 0)));
+    const st = Object.entries(d.jobs_by_status || {});
+    body.append(h('div', { class: 'card', style: 'margin-top:10px' }, h('h3', {}, 'Jobs in the workshop now'), st.length ? st.map(([k, v]) => h('div', { class: 'row' }, h('span', {}, k.replace(/_/g, ' ')), h('b', {}, String(v)))) : h('div', { class: 'mut' }, 'No open jobs.')));
+    body.append(h('div', { class: 'card' }, h('h3', {}, 'By branch'), (d.branches || []).map(b => h('div', { class: 'row' }, h('span', {}, b.name, h('div', { class: 'mut' }, (b.country || '') + ' · ' + b.jobs_in + ' new jobs · ' + b.open_jobs + ' open')), h('b', {}, mny(b.collected))))));
+  }
+  from.onchange = to.onchange = draw;
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'CEO dashboard'), h('div', { class: 'card', style: 'display:flex;gap:10px;flex-wrap:wrap' }, field('From', from), field('To', to)), body);
+  draw();
+}
+
+// ---- credit control ----
+async function credit() {
+  if (!can('ceo', 'manager', 'admin', 'accounting', 'advisor')) return show(msg('err', 'Not allowed.'));
+  const co = (await sb.rpc('public_company')).data || {}, body = h('div');
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Credit control'), body);
+  async function draw() {
+    body.textContent = '';
+    const { data: rows, error } = await sb.rpc('credit_control');
+    if (error) return body.append(msg('err', nice(error.message) + (/credit_control/.test(error.message) ? ' (Run file 12_operations.sql in Supabase first.)' : '')));
+    if (!rows.length) return body.append(h('div', { class: 'card okm' }, 'Nobody owes the workshop anything. Well done.'));
+    const bucket = d => d <= 0 ? 'Not yet due' : d <= 30 ? '1-30 days late' : d <= 60 ? '31-60 days late' : 'Over 60 days late';
+    const tot = {}; rows.forEach(r => { const k = bucket(r.days_overdue); (tot[k] = tot[k] || {}); tot[k][r.currency] = (tot[k][r.currency] || 0) + Number(r.balance); });
+    body.append(h('div', { class: 'card' }, h('h3', {}, 'Ageing'), ['Not yet due', '1-30 days late', '31-60 days late', 'Over 60 days late'].map(k => h('div', { class: 'row' }, h('span', {}, k), h('b', {}, tot[k] ? Object.keys(tot[k]).map(c => money(tot[k][c], c)).join(' + ') : '-')))));
+    for (const r of rows) {
+      const wa = waNumber(r.phone), out = h('div'), first = (r.customer || '').split(' ')[0];
+      const text = `Hello ${first}, this is a friendly reminder from ${co.company_name || 'IKETECH AUTO LTD'}. Invoice ${r.invoice} for your vehicle ${r.vehicle} has a balance of ${money(r.balance, r.currency)}${r.due_date ? ' which was due on ' + r.due_date : ''}. ` + (co.bank_details ? 'Payment details: ' + co.bank_details.replace(/\n/g, ', ') + '. ' : '') + 'Thank you.';
+      const btns = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' });
+      const log = async ch => { const { error: e } = await sb.rpc('log_reminder', { p_invoice: r.invoice, p_channel: ch, p_note: '' }); if (e) out.append(msg('err', nice(e.message))); else draw(); };
+      if (wa) { const a = h('a', { class: 'btn p', href: 'https://wa.me/' + wa + '?text=' + encodeURIComponent(text), target: '_blank', rel: 'noopener' }, 'Remind on WhatsApp'); a.onclick = () => setTimeout(() => log('WHATSAPP'), 600); btns.append(a); }
+      if (r.email) { const a = h('a', { class: 'btn', href: 'mailto:' + r.email + '?subject=' + encodeURIComponent('Payment reminder ' + r.invoice) + '&body=' + encodeURIComponent(text), target: '_blank', rel: 'noopener' }, 'Remind by email'); a.onclick = () => setTimeout(() => log('EMAIL'), 600); btns.append(a); }
+      const call = h('button', { type: 'button' }, 'I called them'); call.onclick = () => log('CALL'); btns.append(call, h('a', { class: 'btn', href: '#invoice/' + r.invoice }, 'Open invoice'));
+      body.append(h('div', { class: 'card', style: r.days_overdue > 30 ? 'border-left:5px solid #c01048' : '' }, h('div', { class: 'row' }, h('b', {}, r.customer), h('b', {}, money(r.balance, r.currency))),
+        h('div', { class: 'mut' }, r.invoice + ' · ' + r.vehicle + ' · ' + (r.phone || 'no phone') + (r.vehicle_collected ? ' · vehicle already collected' : ' · vehicle still here')),
+        h('div', { class: r.days_overdue > 0 ? 'err' : 'mut' }, r.days_overdue > 0 ? r.days_overdue + ' days overdue (due ' + (r.due_date || r.issue_date) + ')' : 'Not yet due'),
+        h('div', { class: 'mut' }, r.reminders ? r.reminders + ' reminder(s), last on ' + new Date(r.last_reminder).toLocaleDateString() : 'No reminder sent yet'), btns, out));
+    }
+  }
+  draw();
+}
+
+// ---- referrals ----
+async function referrals() {
+  if (!can('ceo', 'manager', 'admin', 'accounting')) return show(msg('err', 'Not allowed.'));
+  const body = h('div'); show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Referrals'), body);
+  async function draw() {
+    body.textContent = '';
+    const { data: d, error } = await sb.rpc('referral_overview');
+    if (error) return body.append(msg('err', nice(error.message) + (/referral_overview/.test(error.message) ? ' (Run file 12_operations.sql in Supabase first.)' : '')));
+    const name = h('input'), phone = h('input', { type: 'tel' }), bank = h('input'), out = h('div'), add = h('button', { class: 'p', type: 'button' }, 'Add referrer');
+    add.onclick = async () => { out.textContent = ''; const { error: e } = await sb.from('referrers').insert({ name: name.value.trim(), phone: phone.value.trim() || null, bank_details: bank.value.trim() || null }); if (e) return out.append(msg('err', nice(e.message))); draw(); };
+    body.append(h('div', { class: 'card' }, h('h3', {}, 'New referrer'), h('div', { class: 'mut' }, 'Reward: ' + d.rate + '% of the invoice total, earned when the referred customer pays in full. Link a customer to a referrer on the customer page.'), field('Name', name), field('Phone', phone), field('Bank details', bank), add, out));
+    const wait = d.rewards.filter(w => w.status === 'EARNED');
+    body.append(h('h3', {}, 'Rewards waiting to be paid'));
+    if (!wait.length) body.append(h('div', { class: 'card mut' }, 'None right now.'));
+    for (const w of wait) { const o = h('div'), pay = h('button', { class: 'p', type: 'button' }, 'Mark paid'), vd = h('button', { type: 'button' }, 'Cancel');
+      pay.onclick = async () => { const { error: e } = await sb.rpc('pay_referral', { p_id: w.id }); if (e) o.append(msg('err', nice(e.message))); else draw(); };
+      vd.onclick = async () => { if (!confirm('Cancel this reward?')) return; const { error: e } = await sb.rpc('void_referral', { p_id: w.id }); if (e) o.append(msg('err', nice(e.message))); else draw(); };
+      body.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, w.referrer), h('b', {}, money(w.reward, w.currency))), h('div', { class: 'mut' }, 'For ' + (w.customer || '') + ' · invoice ' + w.invoice + ' · ' + w.rate + '% of ' + money(w.base, w.currency)),
+        h('div', { class: 'mut' }, [w.referrer_phone, w.bank_details].filter(Boolean).join(' · ')), h('div', { style: 'display:flex;gap:8px;margin-top:8px' }, pay, vd), o)); }
+    body.append(h('h3', {}, 'Referrers'));
+    for (const r of d.referrers) body.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, r.name), h('span', { class: 'pill' }, r.customers + ' customer(s)')), h('div', { class: 'mut' }, [r.phone, r.bank_details].filter(Boolean).join(' · ')),
+      h('div', { class: 'row' }, h('span', {}, 'Owed now'), h('b', {}, String(r.owed))), h('div', { class: 'row' }, h('span', {}, 'Paid so far'), h('b', {}, String(r.paid)))));
+    const done = d.rewards.filter(w => w.status !== 'EARNED');
+    if (done.length) body.append(h('h3', {}, 'History'), h('div', { class: 'card' }, done.map(w => h('div', { class: 'row' }, h('span', {}, w.referrer + ' · ' + w.invoice), h('span', {}, money(w.reward, w.currency) + ' · ' + w.status)))));
+  }
+  draw();
+}
+
+// ---- technicians ----
+async function technicians() {
+  if (!can('ceo', 'manager', 'supervisor')) return show(msg('err', 'Not allowed.'));
+  const today = new Date().toISOString().slice(0, 10), from = h('input', { type: 'date', value: today.slice(0, 8) + '01' }), to = h('input', { type: 'date', value: today }), body = h('div');
+  async function draw() {
+    body.textContent = '';
+    const { data: rows, error } = await sb.rpc('technician_scorecard', { p_from: from.value, p_to: to.value });
+    if (error) return body.append(msg('err', nice(error.message) + (/technician_scorecard/.test(error.message) ? ' (Run file 12_operations.sql in Supabase first.)' : '')));
+    if (!rows.length) return body.append(h('div', { class: 'card mut' }, 'No technicians yet. Add them on the Team page with the role technician.'));
+    for (const r of rows) { const t = r.qc_pass + r.qc_fail, pct = t ? Math.round(100 * r.qc_pass / t) : null;
+      body.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, r.name), h('span', { class: 'pill' }, r.jobs_open + ' open now')),
+        [['Jobs given in this period', r.jobs_assigned], ['Jobs finished (ready or collected)', r.jobs_done], ['Inspections done', r.inspections], ['Quality check passed first time', pct === null ? '-' : pct + '% (' + r.qc_pass + ' pass, ' + r.qc_fail + ' failed)'], ['Average days from in to out', r.avg_days === null ? '-' : r.avg_days]]
+          .map(([a, b]) => h('div', { class: 'row' }, h('span', {}, a), h('b', { class: (a.startsWith('Quality') && r.qc_fail > 0) ? 'err' : '' }, String(b)))))); }
+  }
+  from.onchange = to.onchange = draw;
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Technicians'), h('div', { class: 'card', style: 'display:flex;gap:10px;flex-wrap:wrap' }, field('From', from), field('To', to)), body);
+  draw();
+}
+
 // ---- customers ----
 async function customers() {
   const q = h('input', { placeholder: 'Search name or phone' }), list = h('div', { class: 'card' });
@@ -243,6 +385,7 @@ async function customer(id) {
   };
   show(h('a', { href: '#customers' }, '← Customers'), h('h2', {}, c.name), h('div', { class: 'mut' }, [c.phone, c.email, c.id].filter(Boolean).join(' · ')),
     h('div', { class: 'card' }, h('h3', {}, 'Vehicles'), (vs || []).length ? (vs || []).map(v => h('div', { class: 'row' }, h('span', {}, v.registration + ' — ' + [v.year, v.make, v.model].filter(Boolean).join(' ')), can('ceo','manager','admin','advisor','receptionist') ? h('a', { href: '#job/new:' + v.id }, 'New job') : '')) : h('div', { class: 'mut' }, 'No vehicles yet.')),
+    await referrerCard(c),
     h('div', { class: 'card' }, h('h3', {}, 'Add vehicle'), field('Registration number', reg), field('Make', make), field('Model', model), field('Year', year), add, out));
 }
 
@@ -279,7 +422,7 @@ async function job(arg) {
     editable ? h('div', { class: 'card' }, field('Status', st), field('Diagnosis', diag),
       h('label', {}, conf, ' Diagnosis is confirmed by a test (only confirmed diagnoses go on quotations)'), field('Recommended solution', sol), save, out)
       : h('div', { class: 'card' }, h('div', {}, 'Status: ' + j.status.replace(/_/g, ' '))),
-    await jobBilling(j));
+    await jobBilling(j), await qcCard(j));
 }
 
 async function newJob(vehicleId) {
