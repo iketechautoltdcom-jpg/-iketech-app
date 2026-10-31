@@ -50,11 +50,12 @@ window.addEventListener('hashchange', () => me && route());
 // ---- routing ----
 function route() {
   const [page, arg] = (location.hash.slice(1) || 'home').split('/');
-  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, messages, payroll, dashboard, credit, referrals, technicians, settings, branches, team }[page] || home)(arg);
+  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, messages, payroll, dashboard, credit, referrals, technicians, costing, settings, branches, team }[page] || home)(arg);
 }
 
 function home() {
-  const t = (href, title, sub) => h('a', { class: 'tile', href }, title, h('small', {}, sub));
+  const ICON = { 'CEO dashboard': '📊', 'Customers': '👥', 'Inspections': '🔍', 'Quotations': '📝', 'Invoices & payments': '💳', 'Messages': '💬', 'Credit control': '⏳', 'Referrals': '🤝', 'Job costing': '🧮', 'Technicians': '🛠️', 'Jobs': '🚗', 'Payroll': '💰', 'Business settings': '⚙️', 'Branches': '🏢', 'Team': '🪪' };
+  const t = (href, title, sub) => h('a', { class: 'tile', href }, h('span', { class: 'ic' }, ICON[title] || '•'), title, h('small', {}, sub));
   const tiles = [];
   if (can('ceo','manager')) tiles.push(t('#dashboard', 'CEO dashboard', 'Money, jobs, quality and branches at a glance'));
   if (can('ceo','manager','admin','advisor','receptionist')) tiles.push(t('#customers', 'Customers', 'Add and find customers and vehicles'));
@@ -64,11 +65,12 @@ function home() {
   if (can('ceo','manager','admin','supervisor','advisor','receptionist')) tiles.push(t('#messages', 'Messages', 'Updates waiting to be sent to customers'));
   if (can('ceo','manager','admin','accounting','advisor')) tiles.push(t('#credit', 'Credit control', 'Who owes us, how long, and reminders'));
   if (can('ceo','manager','admin','accounting')) tiles.push(t('#referrals', 'Referrals', 'Referrers and the rewards they have earned'));
+  if (can('ceo','manager','admin','accounting')) tiles.push(t('#costing', 'Job costing', 'What each job cost and the profit made'));
   if (can('ceo','manager','supervisor')) tiles.push(t('#technicians', 'Technicians', 'Workload, quality and speed'));
   tiles.push(t('#jobs', 'Jobs', can('technician') ? 'Your assigned jobs' : 'Open and recent jobs'));
   if (can('ceo') || me.can_see_payroll) tiles.push(t('#payroll', 'Payroll', 'Staff pay, advances and payslips (private)'));
   if (can('ceo')) tiles.push(t('#settings', 'Business settings', 'Name, motto, terms, bank details'), t('#branches', 'Branches', 'Add and manage branches'), t('#team', 'Team', 'Roles and access'));
-  show(h('h2', {}, 'Hello, ' + me.full_name.split(' ')[0]), h('div', { class: 'grid' }, tiles));
+  show(h('div', { class: 'hello' }, h('img', { src: 'logo.jpg', alt: '' }), h('div', {}, h('h2', {}, 'Hello, ' + me.full_name.split(' ')[0]), h('div', { class: 'mut' }, 'What would you like to do today?'))), h('div', { class: 'grid' }, tiles));
 }
 
 // ---- customer messages (queued by the database at each stage; staff send them with one click) ----
@@ -112,8 +114,9 @@ async function messages() {
   showAll.onchange = load;
   show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Messages to customers'),
     h('div', { class: 'mut' }, 'Each update is written for you. Tap a button, your WhatsApp or email opens with the message ready, then just press send.'),
-    h('label', {}, showAll, ' Show sent and skipped too'), list);
+    h('label', {}, showAll, ' Show sent and skipped too'), list, h('div', { id: 'fu' }));
   load();
+  followupsBox(co).then(b => { const t = document.getElementById('fu'); if (t) t.append(b); });
 }
 
 // ---- payroll (CEO and people the CEO allows; every action goes through database functions) ----
@@ -343,6 +346,80 @@ async function technicians() {
   draw();
 }
 
+// ---- job costing ----
+async function costCard(j) {
+  if (!can('ceo', 'manager', 'admin', 'accounting', 'supervisor')) return '';
+  const [{ data: costs }, { data: invs }] = await Promise.all([sb.from('job_costs').select('id,kind,description,supplier,amount,created_at').eq('job_id', j.id).order('created_at'),
+    sb.from('invoices').select('id,currency,fx_rate,status').eq('job_id', j.id).eq('status', 'ISSUED')]);
+  let rev = 0; if ((invs || []).length) { const { data: t } = await sb.from('v_invoice_status').select('id,total').in('id', invs.map(i => i.id)); (t || []).forEach(x => { const i = invs.find(y => y.id === x.id); rev += Number(x.total) * (i.currency === 'NGN' ? 1 : Number(i.fx_rate || 1)); }); }
+  const cost = (costs || []).reduce((a, c) => a + Number(c.amount), 0), profit = rev - cost;
+  const box = h('div', { class: 'card' }, h('h3', {}, 'Job costing (naira)'), h('div', { class: 'mut' }, 'What this job cost us. Customers and technicians never see this.')), out = h('div');
+  for (const c of costs || []) box.append(h('div', { class: 'row' }, h('span', {}, h('b', {}, c.description), h('div', { class: 'mut' }, c.kind + (c.supplier ? ' · ' + c.supplier : ''))),
+    h('span', {}, money(c.amount, 'NGN'), ' ', can('ceo', 'manager', 'accounting') ? h('button', { type: 'button', style: 'color:var(--bad);background:none;border:0;cursor:pointer', onclick: async () => { if (!confirm('Remove this cost?')) return; const { error } = await sb.rpc('delete_job_cost', { p_id: c.id }); if (error) out.append(msg('err', nice(error.message))); else job(j.id); } }, 'Remove') : '')));
+  box.append(h('div', { class: 'row' }, h('span', {}, 'Total cost'), h('b', {}, money(cost, 'NGN'))), h('div', { class: 'row' }, h('span', {}, 'Invoiced to customer'), h('b', {}, money(rev, 'NGN'))),
+    h('div', { class: 'row' }, h('b', {}, 'Profit'), h('b', { class: profit < 0 ? 'err' : 'okm', style: 'margin:0' }, money(profit, 'NGN') + (rev > 0 ? ' (' + Math.round(100 * profit / rev) + '%)' : ''))));
+  const kind = h('select', {}, ['PART', 'LABOUR', 'SUBLET', 'OTHER'].map(x => h('option', {}, x))), desc = h('input', { placeholder: 'e.g. Starter motor' }), sup = h('input', { placeholder: 'Supplier (optional)' }), amt = h('input', { type: 'number', min: 0, step: '0.01', placeholder: 'Amount we paid' }), add = h('button', { class: 'p', type: 'button' }, 'Add cost');
+  add.onclick = async () => { out.textContent = ''; const { error } = await sb.rpc('add_job_cost', { p_job: j.id, p_kind: kind.value, p_desc: desc.value, p_supplier: sup.value, p_amount: Number(amt.value) }); if (error) return out.append(msg('err', nice(error.message))); job(j.id); };
+  box.append(field('Add a cost', kind), desc, sup, amt, add, out);
+  return box;
+}
+
+async function costing() {
+  if (!can('ceo', 'manager', 'admin', 'accounting')) return show(msg('err', 'Not allowed.'));
+  const today = new Date().toISOString().slice(0, 10), from = h('input', { type: 'date', value: today.slice(0, 8) + '01' }), to = h('input', { type: 'date', value: today }), body = h('div');
+  async function draw() {
+    body.textContent = '';
+    const { data: rows, error } = await sb.rpc('job_profit', { p_from: from.value, p_to: to.value });
+    if (error) return body.append(msg('err', nice(error.message) + (/job_profit/.test(error.message) ? ' (Run file 13_costing_comms.sql in Supabase first.)' : '')));
+    if (!rows.length) return body.append(h('div', { class: 'card mut' }, 'No invoiced or costed jobs in this period. Add costs on each job page.'));
+    const sum = k => rows.reduce((a, r) => a + Number(r[k]), 0), rev = sum('revenue'), cost = sum('cost');
+    body.append(h('div', { class: 'card' }, h('h3', {}, 'Totals'), h('div', { class: 'row' }, h('span', {}, 'Invoiced'), h('b', {}, money(rev, 'NGN'))), h('div', { class: 'row' }, h('span', {}, 'Cost'), h('b', {}, money(cost, 'NGN'))),
+      h('div', { class: 'row' }, h('b', {}, 'Profit'), h('b', {}, money(rev - cost, 'NGN') + (rev > 0 ? ' (' + Math.round(100 * (rev - cost) / rev) + '%)' : '')))),
+      h('div', { class: 'mut' }, 'Worst margin first. A job with no cost entered shows full revenue as profit, so enter costs on every job.'));
+    for (const r of rows) body.append(h('a', { class: 'card', href: '#job/' + r.job, style: 'display:block;color:inherit;text-decoration:none' }, h('div', { class: 'row' }, h('b', {}, r.job + ' · ' + r.vehicle), h('b', { class: Number(r.profit) < 0 ? 'err' : '', style: 'margin:0' }, money(r.profit, 'NGN'))),
+      h('div', { class: 'mut' }, r.customer + ' · invoiced ' + money(r.revenue, 'NGN') + ' · cost ' + money(r.cost, 'NGN') + (r.margin_pct !== null ? ' · margin ' + r.margin_pct + '%' : '') + (Number(r.cost) === 0 ? ' · NO COST ENTERED' : ''))));
+  }
+  from.onchange = to.onchange = draw;
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Job costing'), h('div', { class: 'card', style: 'display:flex;gap:10px;flex-wrap:wrap' }, field('From', from), field('To', to)), body);
+  draw();
+}
+
+// ---- client communication log (on the customer page) ----
+async function commsCard(c) {
+  if (!can('ceo', 'manager', 'admin', 'supervisor', 'advisor', 'receptionist', 'accounting')) return '';
+  const { data: log } = await sb.from('customer_comms').select('channel,direction,topic,note,at').eq('customer_id', c.id).order('at', { ascending: false }).limit(30);
+  const box = h('div', { class: 'card' }, h('h3', {}, 'Conversations with this customer'));
+  if (!(log || []).length) box.append(h('div', { class: 'mut' }, 'Nothing recorded yet.'));
+  for (const m of log || []) box.append(h('div', { class: 'row' }, h('span', {}, h('b', {}, (m.direction === 'OUT' ? 'We → ' : 'Customer → ') + m.channel.toLowerCase()), ' · ' + m.topic.replace(/_/g, ' ').toLowerCase(), m.note ? h('div', { class: 'mut' }, m.note) : ''), h('span', { class: 'mut' }, new Date(m.at).toLocaleDateString())));
+  const ch = h('select', {}, ['CALL', 'WHATSAPP', 'EMAIL', 'VISIT', 'SMS', 'OTHER'].map(x => h('option', {}, x))), dir = h('select', {}, h('option', { value: 'OUT' }, 'We contacted them'), h('option', { value: 'IN' }, 'They contacted us')),
+    tp = h('select', {}, [['UPDATE', 'Update on the repair'], ['QUOTE', 'Quotation'], ['PAYMENT', 'Payment'], ['COMPLAINT', 'Complaint'], ['FOLLOW_UP', 'Follow-up'], ['SERVICE_REMINDER', 'Service reminder'], ['OTHER', 'Other']].map(([v, l]) => h('option', { value: v }, l))),
+    note = h('input', { placeholder: 'What was said' }), out = h('div'), b = h('button', { class: 'p', type: 'button' }, 'Save note');
+  b.onclick = async () => { out.textContent = ''; const { error } = await sb.rpc('add_comm', { p_customer: c.id, p_job: '', p_channel: ch.value, p_direction: dir.value, p_topic: tp.value, p_note: note.value }); if (error) return out.append(msg('err', nice(error.message))); customer(c.id); };
+  box.append(h('h4', {}, 'Record a conversation'), ch, dir, tp, note, b, out);
+  return box;
+}
+
+// ---- follow-ups (shown on the Messages page) ----
+async function followupsBox(co) {
+  const { data: rows, error } = await sb.rpc('followups_due');
+  if (error) return h('div', { class: 'card mut' }, /followups_due/.test(error.message) ? 'Run file 13_costing_comms.sql in Supabase to turn on follow-ups.' : nice(error.message));
+  const box = h('div', {}, h('h3', {}, 'Follow-ups due'), h('div', { class: 'mut' }, 'Three days after collection we ask how the car is. After six months we remind them about a service.'));
+  if (!rows.length) box.append(h('div', { class: 'card mut' }, 'No follow-ups due today.'));
+  for (const r of rows) {
+    const first = (r.customer || '').split(' ')[0], wa = waNumber(r.phone), out = h('div'), co_ = co.company_name || 'IKETECH AUTO LTD';
+    const text = r.kind === 'FOLLOW_UP' ? `Hello ${first}, this is ${co_}. We hope your ${r.vehicle} is running well since we released it. If you notice anything at all, please call us and we will look at it. Thank you for choosing us.`
+      : `Hello ${first}, it has been about six months since we worked on your ${r.vehicle}. It is a good time for a service check so small issues do not become big ones. Reply to book a time. ${co_}`;
+    const log = async () => { const { error: e } = await sb.rpc('add_comm', { p_customer: r.customer_id, p_job: r.job, p_channel: 'WHATSAPP', p_direction: 'OUT', p_topic: r.kind, p_note: 'Sent from follow-ups' }); if (e) out.append(msg('err', nice(e.message))); else messages(); };
+    const btns = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' });
+    if (wa) { const a = h('a', { class: 'btn p', href: 'https://wa.me/' + wa + '?text=' + encodeURIComponent(text), target: '_blank', rel: 'noopener' }, 'Send on WhatsApp'); a.onclick = () => setTimeout(log, 600); btns.append(a); }
+    if (r.email) { const a = h('a', { class: 'btn', href: 'mailto:' + r.email + '?subject=' + encodeURIComponent(co_) + '&body=' + encodeURIComponent(text), target: '_blank', rel: 'noopener' }, 'Send by email'); a.onclick = () => setTimeout(log, 600); btns.append(a); }
+    const done = h('button', { type: 'button' }, 'Done / skip'); done.onclick = log; btns.append(done);
+    box.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, r.kind === 'FOLLOW_UP' ? 'How is the car? (3 days)' : 'Service reminder (6 months)'), h('span', { class: 'pill' }, r.days_since + ' days ago')),
+      h('div', { class: 'mut' }, r.customer + ' · ' + r.vehicle + ' · ', h('a', { href: '#customer/' + r.customer_id }, 'open customer')), h('div', { style: 'margin-top:6px;font-size:13px' }, text), btns, out));
+  }
+  return box;
+}
+
 // ---- customers ----
 async function customers() {
   const q = h('input', { placeholder: 'Search name or phone' }), list = h('div', { class: 'card' });
@@ -385,7 +462,7 @@ async function customer(id) {
   };
   show(h('a', { href: '#customers' }, '← Customers'), h('h2', {}, c.name), h('div', { class: 'mut' }, [c.phone, c.email, c.id].filter(Boolean).join(' · ')),
     h('div', { class: 'card' }, h('h3', {}, 'Vehicles'), (vs || []).length ? (vs || []).map(v => h('div', { class: 'row' }, h('span', {}, v.registration + ' — ' + [v.year, v.make, v.model].filter(Boolean).join(' ')), can('ceo','manager','admin','advisor','receptionist') ? h('a', { href: '#job/new:' + v.id }, 'New job') : '')) : h('div', { class: 'mut' }, 'No vehicles yet.')),
-    await referrerCard(c),
+    await referrerCard(c), await commsCard(c),
     h('div', { class: 'card' }, h('h3', {}, 'Add vehicle'), field('Registration number', reg), field('Make', make), field('Model', model), field('Year', year), add, out));
 }
 
@@ -422,7 +499,7 @@ async function job(arg) {
     editable ? h('div', { class: 'card' }, field('Status', st), field('Diagnosis', diag),
       h('label', {}, conf, ' Diagnosis is confirmed by a test (only confirmed diagnoses go on quotations)'), field('Recommended solution', sol), save, out)
       : h('div', { class: 'card' }, h('div', {}, 'Status: ' + j.status.replace(/_/g, ' '))),
-    await jobBilling(j), await qcCard(j));
+    await jobBilling(j), await qcCard(j), await costCard(j));
 }
 
 async function newJob(vehicleId) {
@@ -887,6 +964,7 @@ async function invoice(id) {
     const reversed = new Set((pays || []).filter(p => p.reverses).map(p => p.reverses)), pout = h('div');
     for (const p of pays || []) pbox.append(h('div', { class: 'row' },
       h('span', {}, h('b', {}, money(p.amount, cur)), ' ' + p.method + (p.reference ? ' · ' + p.reference : ''), h('div', { class: 'mut' }, new Date(p.paid_at).toLocaleString() + (p.reason ? ' · ' + p.reason : '') + (reversed.has(p.id) ? ' · REVERSED' : ''))),
+      !p.reverses && !reversed.has(p.id) ? h('a', { class: 'btn', href: docUrl('receipt', p.id), target: '_blank', rel: 'noopener' }, 'Receipt') : '',
       !p.reverses && !reversed.has(p.id) && can('ceo', 'manager', 'accounting') ? h('button', { type: 'button', style: 'color:var(--bad);background:none;border:0;cursor:pointer', onclick: async () => {
         const why = prompt('Why is this payment being reversed? (required)'); if (!why || why.trim().length < 5) return;
         const { error } = await sb.rpc('reverse_payment', { p_payment: p.id, p_reason: why.trim() }); if (error) return pout.append(msg('err', nice(error.message))); reload(); } }, 'Reverse') : ''));

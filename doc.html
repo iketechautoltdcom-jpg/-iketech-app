@@ -35,13 +35,13 @@
       (lines || []).forEach((l, i) => { const a = l.qty * l.unit_price; total += a; const tr = el('tr'); tr.append(el('td', i + 1), el('td', l.description), el('td', l.qty, 'r'), el('td', money(l.unit_price, cur), 'r'), el('td', money(a, cur), 'r')); tb.append(tr); });
       const tt = el('tr', null, 'tot'); tt.append(el('td', ''), el('td', 'TOTAL'), el('td', ''), el('td', ''), el('td', money(total, cur), 'r')); tb.append(tt);
       body.push(add(el('p'), el('b', 'Customer complaint: '), d.jobs?.complaint || ''));
-      if (type === 'quotation') {
-        const jb = d.jobs || {};
+      {
+        const jb = d.jobs || {}, qid = type === 'quotation' ? id : d.quotation_id;
         if (jb.diagnosis_confirmed && (jb.diagnosis || '').trim()) body.push(add(el('p'), el('b', 'Diagnosis (confirmed by test): ', null, 'color:#0f766e'), jb.diagnosis));
-        const { data: reps } = await sb.from('recommendations').select('item, summary, priority').eq('quotation_id', id).order('id');
+        const { data: reps } = await sb.from('recommendations').select('item, summary, priority').eq('quotation_id', qid || '').order('id');
         const rl = (reps || []).map(r => r.item + (r.summary ? ' – ' + r.summary : ''));
         if ((jb.recommended_solution || '').trim()) rl.unshift(jb.recommended_solution.trim());
-        if (rl.length) { const ul = el('ul', null, null, 'margin:4px 0 8px 18px;padding:0'); rl.forEach(x => ul.append(el('li', x))); body.push(add(el('p'), el('b', 'Recommended repair:', null, 'color:#0f766e')), ul); }
+        if (rl.length) { const ul = el('ul', null, null, 'margin:4px 0 8px 18px;padding:0'); rl.forEach(x => ul.append(el('li', x))); body.push(add(el('p'), el('b', type === 'quotation' ? 'Recommended repair:' : 'Repair carried out:', null, 'color:#0f766e')), ul); }
       }
       body.push(tb);
       if (cur === 'USD' && fx) body.push(el('p', 'Exchange rate: ₦' + Number(fx).toLocaleString() + ' per $1. Naira equivalent: ₦' + (total * fx).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), null, 'font-size:12px'));
@@ -54,6 +54,28 @@
         if (co.bank_details) body.push(el('h4', 'How to pay'), el('div', co.bank_details, null, 'white-space:pre-line'));
       }
       if (type === 'quotation') body.push(el('div', 'Customer approval (sign and date): ______________________________', null, 'margin-top:26px'));
+    } else if (type === 'receipt') {
+      const { data: p, error } = await sb.from('payments').select('*, invoices(id, currency, job_id, jobs(vehicles(registration,make,model,year), customers(name,phone)))').eq('id', id).maybeSingle();
+      if (error || !p || p.reverses || Number(p.amount) <= 0) return fail('Receipt not found.');
+      const { data: rev } = await sb.from('payments').select('id').eq('reverses', id).maybeSingle();
+      const { data: all } = await sb.from('payments').select('amount').eq('invoice_id', p.invoice_id);
+      const { data: ls } = await sb.from('invoice_lines').select('qty,unit_price').eq('invoice_id', p.invoice_id);
+      const total = (ls || []).reduce((a, l) => a + l.qty * l.unit_price, 0), paid = (all || []).reduce((a, x) => a + Number(x.amount), 0);
+      title = 'PAYMENT RECEIPT'; number = p.id; cur = p.currency; cust = p.invoices?.jobs?.customers || {}; const v = p.invoices?.jobs?.vehicles || {};
+      vehicle = [v.year, v.make, v.model].filter(Boolean).join(' ') + (v.registration ? ' (' + v.registration + ')' : '');
+      const ONES = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'], TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+      const below1000 = n => (n >= 100 ? ONES[Math.floor(n / 100)] + ' hundred' + (n % 100 ? ' and ' : '') : '') + (n % 100 < 20 ? ONES[n % 100] : TENS[Math.floor((n % 100) / 10)] + (n % 10 ? '-' + ONES[n % 10] : ''));
+      const words = n => { if (n === 0) return 'zero'; const parts = []; [[1e9, 'billion'], [1e6, 'million'], [1e3, 'thousand']].forEach(([d, w]) => { if (n >= d) { parts.push(below1000(Math.floor(n / d)) + ' ' + w); n %= d; } }); if (n > 0) parts.push(below1000(n)); return parts.join(', '); };
+      const amt = Number(p.amount), whole = Math.floor(amt), minor = Math.round((amt - whole) * 100), unit = { NGN: ['naira', 'kobo'], USD: ['dollars', 'cents'], GBP: ['pounds', 'pence'], EUR: ['euros', 'cents'] }[cur] || [cur, 'cents'];
+      const inWords = (words(whole) + ' ' + unit[0] + (minor ? ' and ' + words(minor) + ' ' + unit[1] : '') + ' only').replace(/^./, c => c.toUpperCase());
+      const big = el('p', null, null, 'font-size:20px;margin:14px 0 4px'); add(big, el('b', 'Amount received: ' + money(amt, cur)));
+      body.push(big, el('p', inWords, null, 'font-style:italic;margin-top:0'));
+      const tb = el('table'); [['Received on', new Date(p.paid_at).toLocaleString('en-GB')], ['Payment method', p.method + (p.reference ? ' · Ref ' + p.reference : '')], ['For invoice', p.invoice_id], ['Invoice total', money(total, cur)], ['Total paid to date', money(paid, cur)], ['Balance remaining', money(total - paid, cur)]]
+        .forEach(([a, b]) => { const tr = el('tr'); tr.append(el('td', a), el('td', b, 'r')); tb.append(tr); });
+      body.push(tb);
+      if (rev) body.push(el('p', 'THIS PAYMENT HAS BEEN REVERSED AND THIS RECEIPT IS NOT VALID.', null, 'color:#c01048;font-weight:bold'));
+      else if (total - paid <= 0) body.push(el('p', 'Paid in full. Thank you for your business.', null, 'color:#0f766e;font-weight:bold'));
+      body.push(el('div', 'Received by (name and signature): ______________________________', null, 'margin-top:26px'));
     } else if (type === 'inspection') {
       const { data: i, error } = await sb.from('inspections').select('*, vehicles(registration,make,model,year), customers(name,phone,email), technician:profiles!inspections_technician_id_fkey(full_name)').eq('id', id).maybeSingle();
       if (error || !i) return fail('Report not found.');
