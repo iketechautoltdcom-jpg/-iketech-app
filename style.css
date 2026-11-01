@@ -66,3 +66,25 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand);outline-o
 .hello img{width:56px;height:56px;border-radius:12px;object-fit:contain;background:#fff;border:1px solid var(--line)}
 .hello h2{margin:0}.hello .mut{font-style:italic}
 @media (max-width:520px){main{padding:12px 12px 60px}h2{font-size:21px}.grid{grid-template-columns:repeat(2,1fr)}.tile{min-height:104px;padding:14px 12px}}
+
+/* ---- dashboard charts (validated palette: blue / orange, light and dark) ---- */
+.viz{--v-s1:#2a78d6;--v-s2:#eb6834;--v-grid:#e3e6ea;--v-axis:#667085;--v-bar:#2a78d6;--v-gap:#fff}
+@media (prefers-color-scheme:dark){.viz{--v-s1:#3987e5;--v-s2:#d95926;--v-grid:#27303b;--v-axis:#9aa6b4;--v-bar:#3987e5;--v-gap:#171d25}}
+.viz{position:relative}
+.viz h3{margin:0 0 2px;color:var(--ink)}
+.viz .sub{color:var(--mut);font-size:13px;margin-bottom:8px}
+.viz svg{width:100%;height:auto;display:block;touch-action:pan-y}
+.viz .leg{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--ink);margin:4px 0 6px}
+.viz .leg i{display:inline-block;width:16px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.viz .hb{display:grid;grid-template-columns:minmax(80px,32%) 1fr auto;gap:8px;align-items:center;padding:5px 0;font-size:14px}
+.viz .hb .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.viz .hb .trk{display:block;height:12px;background:var(--v-grid);border-radius:0 4px 4px 0;overflow:hidden}
+.viz .hb .vbar{height:12px;border-radius:0 4px 4px 0;background:var(--v-bar);min-width:2px;transition:filter .1s}
+.viz .hb:hover .vbar,.viz .hb:focus .vbar{filter:brightness(1.18)}
+.viz .hb .val{color:var(--ink);font-variant-numeric:tabular-nums;font-weight:600}
+.viz .tip{position:absolute;pointer-events:none;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12.5px;box-shadow:0 6px 18px rgba(0,0,0,.14);z-index:4;display:none;min-width:140px}
+.viz .tip b{font-variant-numeric:tabular-nums}.viz .tip .k{display:inline-block;width:12px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.viz details{margin-top:8px;font-size:13px}.viz details summary{cursor:pointer;color:var(--mut)}
+.viz table{width:100%;border-collapse:collapse;margin-top:6px;font-size:12.5px}.viz th,.viz td{padding:4px 6px;border-bottom:1px solid var(--line);text-align:right}.viz th:first-child,.viz td:first-child{text-align:left}
+.presets{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.presets button.on{background:var(--brand);color:#fff;border-color:var(--brand)}

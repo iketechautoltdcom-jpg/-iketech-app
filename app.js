@@ -277,16 +277,67 @@ async function referrerCard(c) {
   return h('div', { class: 'card' }, h('h3', {}, 'Referred by'), h('div', { class: 'mut' }, 'The referrer earns a reward when this customer pays an invoice in full.'), sel, b, out);
 }
 
+// ---- charts: small hand-made SVG helpers (no library, nothing to load) ----
+const SVGNS = 'http://www.w3.org/2000/svg';
+function sv(tag, attrs, ...kids) { const e = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v); kids.forEach(c => c != null && e.append(c.nodeType ? c : document.createTextNode(c))); return e; }
+const short = n => { n = Number(n || 0); const a = Math.abs(n); const f = (v, u) => (Math.round(v * 10) / 10) + u; return a >= 1e9 ? f(n / 1e9, 'B') : a >= 1e6 ? f(n / 1e6, 'M') : a >= 1e3 ? f(n / 1e3, 'k') : String(Math.round(n)); };
+function niceMax(v) { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))), f = v / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p; }
+function tableView(cols, rows) { const t = h('table', {}, h('tr', {}, cols.map(c => h('th', {}, c))), rows.map(r => h('tr', {}, r.map(c => h('td', {}, String(c)))))); return h('details', {}, h('summary', {}, 'View as table'), t); }
+function tipBox(root) { const t = h('div', { class: 'tip' }); root.append(t); return { el: t, show(x, y, head, rows) { t.textContent = ''; t.append(h('div', { class: 'mut' }, head)); rows.forEach(r => t.append(h('div', {}, r.color ? h('span', { class: 'k', style: 'background:' + r.color }) : '', h('b', {}, r.value), ' ', h('span', { class: 'mut' }, r.name)))); t.style.display = 'block'; const w = root.clientWidth, tw = t.offsetWidth; t.style.left = Math.max(4, Math.min(w - tw - 4, x + 12)) + 'px'; t.style.top = Math.max(4, y - 10) + 'px'; }, hide() { t.style.display = 'none'; } }; }
+
+// line chart with crosshair, one tooltip for every series, legend, table view
+function chartLine(title, sub, labels, series, fmt, whole) {
+  const root = h('div', { class: 'card viz' }, h('h3', {}, title), h('div', { class: 'sub' }, sub)), tip = tipBox(root);
+  if (series.length > 1) root.append(h('div', { class: 'leg' }, series.map(s => h('span', {}, h('i', { style: 'background:' + s.color }), s.name))));
+  const W = window.innerWidth < 520 ? 420 : 640, H = 230, L = 46, R = 12, T = 10, B = 26, n = labels.length, top_ = Math.max(1, ...series.flatMap(s => s.values)), max = whole ? Math.max(4, Math.ceil(top_ / 4) * 4) : niceMax(top_);
+  const x = i => n <= 1 ? L + (W - L - R) / 2 : L + i * (W - L - R) / (n - 1), y = v => T + (H - T - B) * (1 - v / max);
+  const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': title });
+  for (let k = 0; k <= 4; k++) { const v = max * k / 4; svg.append(sv('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: 'var(--v-grid)', 'stroke-width': 1 }), sv('text', { x: L - 6, y: y(v) + 4, 'text-anchor': 'end', 'font-size': 11, fill: 'var(--v-axis)' }, short(v))); }
+  const step = Math.max(1, Math.ceil(n / 7)); labels.forEach((lb, i) => { if (i % step === 0 || i === n - 1 && n < 9) svg.append(sv('text', { x: x(i), y: H - 8, 'text-anchor': i === n - 1 && n > 1 ? 'end' : 'middle', 'font-size': 11, fill: 'var(--v-axis)' }, lb)); });
+  series.forEach(s => { const pts = s.values.map((v, i) => x(i) + ',' + y(v)).join(' '); svg.append(sv('polyline', { points: pts, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    if (n <= 40) s.values.forEach((v, i) => svg.append(sv('circle', { cx: x(i), cy: y(v), r: 3, fill: s.color, stroke: 'var(--card)', 'stroke-width': 2 }))); });
+  const cross = sv('line', { y1: T, y2: H - B, stroke: 'var(--v-axis)', 'stroke-width': 1, 'stroke-dasharray': '3 3', style: 'display:none' }); svg.append(cross);
+  const hit = sv('rect', { x: L, y: T, width: W - L - R, height: H - T - B, fill: 'transparent', tabindex: 0 }); svg.append(hit);
+  const at = ev => { const r = svg.getBoundingClientRect(), px = (ev.clientX - r.left) * W / r.width; let i = n <= 1 ? 0 : Math.round((px - L) / ((W - L - R) / (n - 1))); i = Math.max(0, Math.min(n - 1, i)); cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.style.display = ''; const rr = root.getBoundingClientRect();
+    tip.show(ev.clientX - rr.left, ev.clientY - rr.top, labels[i], series.map(s => ({ color: s.color, name: s.name, value: fmt(s.values[i]) }))); };
+  hit.addEventListener('pointermove', at); hit.addEventListener('pointerdown', at); hit.addEventListener('pointerleave', () => { tip.hide(); cross.style.display = 'none'; });
+  root.append(svg, tableView(['Period', ...series.map(s => s.name)], labels.map((l, i) => [l, ...series.map(s => fmt(s.values[i]))])));
+  return root;
+}
+// ranked or ordered horizontal bars, one hue, value at the end, tooltip + table
+function chartBars(title, sub, rows, fmt, emptyText) {
+  const root = h('div', { class: 'card viz' }, h('h3', {}, title), h('div', { class: 'sub' }, sub)), tip = tipBox(root);
+  if (!rows.length || rows.every(r => !r.value)) { root.append(h('div', { class: 'mut' }, emptyText || 'Nothing to show for this period.')); return root; }
+  const max = Math.max(...rows.map(r => r.value));
+  rows.forEach(r => { const row = h('div', { class: 'hb', tabindex: 0 }, h('span', { class: 'lbl', title: r.name }, r.name), h('span', { class: 'trk' }, h('div', { class: 'vbar', style: 'width:' + Math.max(1, Math.round(100 * r.value / max)) + '%' + (r.color ? ';background:' + r.color : '') })), h('span', { class: 'val' }, fmt(r.value)));
+    const show = ev => { const rr = root.getBoundingClientRect(); tip.show((ev.clientX || rr.left + 40) - rr.left, (ev.clientY || rr.top + 40) - rr.top, r.name, [{ name: r.note || '', value: fmt(r.value) }]); };
+    row.addEventListener('pointermove', show); row.addEventListener('focus', show); row.addEventListener('pointerleave', () => tip.hide()); row.addEventListener('blur', () => tip.hide()); root.append(row); });
+  root.append(tableView(['Item', 'Amount'], rows.map(r => [r.name, fmt(r.value)])));
+  return root;
+}
+
 // ---- CEO dashboard ----
 async function dashboard() {
   if (!can('ceo', 'manager')) return show(msg('err', 'The dashboard is for the CEO and managers.'));
-  const today = new Date().toISOString().slice(0, 10), first = today.slice(0, 8) + '01';
-  const from = h('input', { type: 'date', value: first }), to = h('input', { type: 'date', value: today }), body = h('div');
+  const iso = d => d.toISOString().slice(0, 10), now = new Date(), today = iso(now);
+  const from = h('input', { type: 'date', value: today.slice(0, 8) + '01' }), to = h('input', { type: 'date', value: today }), body = h('div'), presets = h('div', { class: 'presets' });
+  const set = (a, b) => { from.value = a; to.value = b; draw(); };
+  const P = [['This month', () => set(today.slice(0, 8) + '01', today)], ['Last 30 days', () => set(iso(new Date(now - 29 * 864e5)), today)], ['Last 3 months', () => set(iso(new Date(now - 89 * 864e5)), today)], ['This year', () => set(today.slice(0, 4) + '-01-01', today)]];
+  P.forEach(([l, f]) => presets.append(h('button', { type: 'button', onclick: f }, l)));
   const mny = o => { const k = Object.keys(o || {}); return k.length ? k.map(c => money(o[c], c)).join(' + ') : '0'; };
   const tile = (label, value, sub, warn) => h('div', { class: 'tile', style: warn ? 'border-color:#c01048' : '' }, h('small', {}, label), h('b', { style: 'font-size:20px;display:block;margin:4px 0' }, String(value)), sub ? h('small', {}, sub) : '');
+  const naira = v => '₦' + short(v);
+  // group daily rows into days, weeks or months so a long range stays readable
+  function bucket(daily) {
+    const n = daily.length, mode = n <= 45 ? 'day' : n <= 200 ? 'week' : 'month', out = new Map();
+    const key = d => { const dt = new Date(d + 'T00:00:00'); if (mode === 'day') return d; if (mode === 'month') return d.slice(0, 7); const day = (dt.getDay() + 6) % 7; dt.setDate(dt.getDate() - day); return iso(new Date(dt.getTime() - dt.getTimezoneOffset() * 6e4)); };
+    daily.forEach(r => { const k = key(r.d), o = out.get(k) || { invoiced: 0, collected: 0, jobs_in: 0, jobs_out: 0, spent: 0 }; for (const f of Object.keys(o)) o[f] += Number(r[f] || 0); out.set(k, o); });
+    const lab = k => mode === 'month' ? new Date(k + '-01T00:00:00').toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : new Date(k + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    return { mode, keys: [...out.keys()], labels: [...out.keys()].map(lab), rows: [...out.values()] };
+  }
   async function draw() {
     body.textContent = '';
-    const { data: d, error } = await sb.rpc('ceo_dashboard', { p_from: from.value, p_to: to.value });
+    const [{ data: d, error }, { data: t, error: e2 }] = await Promise.all([sb.rpc('ceo_dashboard', { p_from: from.value, p_to: to.value }), sb.rpc('ceo_trends', { p_from: from.value, p_to: to.value })]);
     if (error) return body.append(msg('err', nice(error.message) + (/ceo_dashboard/.test(error.message) ? ' (Run file 12_operations.sql in Supabase first.)' : '')));
     const qcT = d.qc_pass + d.qc_fail, conv = d.quotes_sent ? Math.round(100 * d.quotes_approved / d.quotes_sent) : null;
     body.append(h('div', { class: 'grid' }, tile('Money collected', mny(d.collected), 'in this period'), tile('Invoiced', mny(d.invoiced), 'issued in this period'), tile('Still owed to us', mny(d.outstanding), 'all open invoices'),
@@ -295,12 +346,26 @@ async function dashboard() {
         tile('Quotations waiting', d.quotes_waiting, 'customer has not answered'), tile('Quotation approval rate', conv === null ? '-' : conv + '%', d.quotes_approved + ' of ' + d.quotes_sent + ' sent'), tile('Quality checks passed', qcT ? Math.round(100 * d.qc_pass / qcT) + '%' : '-', d.qc_fail + ' failed (rework)', d.qc_fail > 0)),
       h('div', { class: 'grid', style: 'margin-top:10px' }, tile('Inspections', d.inspections, d.inspections_waiting_review + ' waiting for review', d.inspections_waiting_review > 0), tile('Referral rewards owed', mny(d.referral_owed), 'earned, not yet paid'),
         tile('Customer messages waiting', d.messages_waiting, (d.messages_overdue || 0) + ' waiting over 2 hours', (d.messages_overdue || 0) > 0)));
+    const charts = h('div', { style: 'margin-top:14px' }); body.append(h('h3', { style: 'margin:18px 0 8px' }, 'Charts'), charts);
+    if (e2) { charts.append(msg('err', nice(e2.message) + (/ceo_trends/.test(e2.message) ? ' (Run file 17_dashboard_charts.sql in Supabase to turn on the charts.)' : ''))); }
+    else {
+      const bk = bucket(t.daily), per = { day: 'by day', week: 'by week', month: 'by month' }[bk.mode], V1 = 'var(--v-s1)', V2 = 'var(--v-s2)';
+      charts.append(chartLine('Sales and money collected', 'Naira, ' + per + '. Dollar amounts are converted at the rate saved on each invoice.', bk.labels, [{ name: 'Invoiced', color: V2, values: bk.rows.map(r => r.invoiced) }, { name: 'Collected', color: V1, values: bk.rows.map(r => r.collected) }], naira));
+      charts.append(chartLine('Vehicles in and out', 'Number of vehicles, ' + per + '.', bk.labels, [{ name: 'Vehicles in', color: V1, values: bk.rows.map(r => r.jobs_in) }, { name: 'Vehicles out', color: V2, values: bk.rows.map(r => r.jobs_out) }], v => String(Math.round(v)), true));
+      const stages = [['RECEIVED', 'Received'], ['INSPECTING', 'Inspecting'], ['DIAGNOSED', 'Diagnosed'], ['AWAITING_APPROVAL', 'Awaiting approval'], ['APPROVED', 'Approved'], ['IN_REPAIR', 'In repair'], ['QUALITY_CHECK', 'Quality check'], ['READY', 'Ready']];
+      charts.append(chartBars('Vehicles in the workshop now', 'Open jobs at each stage, in the order work flows.', stages.map(([k, l]) => ({ name: l, value: Number((d.jobs_by_status || {})[k] || 0) })).filter(r => r.value > 0), v => String(v), 'No open jobs right now.'));
+      const ag = t.ageing || {};
+      charts.append(chartBars('Who owes us, by age', 'Unpaid invoices in naira, grouped by how late they are.', [{ name: 'Not yet due', value: Number(ag.current || 0) }, { name: '1 to 30 days late', value: Number(ag.d1_30 || 0) }, { name: '31 to 60 days late', value: Number(ag.d31_60 || 0) }, { name: 'Over 60 days late', value: Number(ag.d60 || 0) }], naira, 'Nobody owes the workshop anything.'));
+      charts.append(chartBars('Top customers', 'Five biggest by sales in this period (naira).', (t.top_customers || []).map(r => ({ name: r.name, value: Number(r.value) })), naira));
+      charts.append(chartBars('Where the spending went', 'Expenses by category in this period (naira).', (t.expense_categories || []).map(r => ({ name: r.name, value: Number(r.value) })), naira, 'No expenses recorded in this period.'));
+      const br = (d.branches || []).map(b => ({ name: b.name + (b.country ? ' (' + b.country + ')' : ''), value: Object.values(b.collected || {}).reduce((a, x) => a + Number(x), 0) }));
+      if (br.length > 1) charts.append(chartBars('Branches compared', 'Money collected in this period (mixed currencies are added at face value).', br.sort((a, b) => b.value - a.value), naira));
+    }
     const st = Object.entries(d.jobs_by_status || {});
-    body.append(h('div', { class: 'card', style: 'margin-top:10px' }, h('h3', {}, 'Jobs in the workshop now'), st.length ? st.map(([k, v]) => h('div', { class: 'row' }, h('span', {}, k.replace(/_/g, ' ')), h('b', {}, String(v)))) : h('div', { class: 'mut' }, 'No open jobs.')));
-    body.append(h('div', { class: 'card' }, h('h3', {}, 'By branch'), (d.branches || []).map(b => h('div', { class: 'row' }, h('span', {}, b.name, h('div', { class: 'mut' }, (b.country || '') + ' · ' + b.jobs_in + ' new jobs · ' + b.open_jobs + ' open')), h('b', {}, mny(b.collected))))));
+    body.append(h('div', { class: 'card', style: 'margin-top:10px' }, h('h3', {}, 'By branch'), (d.branches || []).map(b => h('div', { class: 'row' }, h('span', {}, b.name, h('div', { class: 'mut' }, (b.country || '') + ' · ' + b.jobs_in + ' new jobs · ' + b.open_jobs + ' open')), h('b', {}, mny(b.collected))))));
   }
   from.onchange = to.onchange = draw;
-  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'CEO dashboard'), h('div', { class: 'card', style: 'display:flex;gap:10px;flex-wrap:wrap' }, field('From', from), field('To', to)), body);
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'CEO dashboard'), presets, h('div', { class: 'card', style: 'display:flex;gap:10px;flex-wrap:wrap' }, field('From', from), field('To', to)), body);
   draw();
 }
 
