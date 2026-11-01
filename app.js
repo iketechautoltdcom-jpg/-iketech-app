@@ -50,11 +50,11 @@ window.addEventListener('hashchange', () => me && route());
 // ---- routing ----
 function route() {
   const [page, arg] = (location.hash.slice(1) || 'home').split('/');
-  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, messages, payroll, dashboard, credit, referrals, technicians, costing, settings, branches, team }[page] || home)(arg);
+  ({ home, customers, customer, jobs, job, inspections, insp, quotations, quotation, invoices, invoice, messages, payroll, dashboard, credit, referrals, technicians, costing, stock, purchasing, expenses, profit, settings, branches, team }[page] || home)(arg);
 }
 
 function home() {
-  const ICON = { 'CEO dashboard': '📊', 'Customers': '👥', 'Inspections': '🔍', 'Quotations': '📝', 'Invoices & payments': '💳', 'Messages': '💬', 'Credit control': '⏳', 'Referrals': '🤝', 'Job costing': '🧮', 'Technicians': '🛠️', 'Jobs': '🚗', 'Payroll': '💰', 'Business settings': '⚙️', 'Branches': '🏢', 'Team': '🪪' };
+  const ICON = { 'CEO dashboard': '📊', 'Customers': '👥', 'Inspections': '🔍', 'Quotations': '📝', 'Invoices & payments': '💳', 'Messages': '💬', 'Credit control': '⏳', 'Referrals': '🤝', 'Job costing': '🧮', 'Parts and stock': '📦', 'Purchasing': '🛒', 'Expenses': '🧾', 'Profit and loss': '📈', 'Technicians': '🛠️', 'Jobs': '🚗', 'Payroll': '💰', 'Business settings': '⚙️', 'Branches': '🏢', 'Team': '🪪' };
   const t = (href, title, sub) => h('a', { class: 'tile', href }, h('span', { class: 'ic' }, ICON[title] || '•'), title, h('small', {}, sub));
   const tiles = [];
   if (can('ceo','manager')) tiles.push(t('#dashboard', 'CEO dashboard', 'Money, jobs, quality and branches at a glance'));
@@ -65,6 +65,10 @@ function home() {
   if (can('ceo','manager','admin','supervisor','advisor','receptionist')) tiles.push(t('#messages', 'Messages', 'Updates waiting to be sent to customers'));
   if (can('ceo','manager','admin','accounting','advisor')) tiles.push(t('#credit', 'Credit control', 'Who owes us, how long, and reminders'));
   if (can('ceo','manager','admin','accounting')) tiles.push(t('#referrals', 'Referrals', 'Referrers and the rewards they have earned'));
+  tiles.push(t('#stock', 'Parts and stock', can('technician') ? 'Check what is in stock' : 'What we have, what is low'));
+  if (can('ceo','manager','admin','accounting')) tiles.push(t('#purchasing', 'Purchasing', 'Suppliers, orders and what we owe'));
+  if (can('ceo','manager','admin','accounting')) tiles.push(t('#expenses', 'Expenses', 'Rent, fuel, tools and other spending'));
+  if (can('ceo')) tiles.push(t('#profit', 'Profit and loss', 'What the business really earned'));
   if (can('ceo','manager','admin','accounting')) tiles.push(t('#costing', 'Job costing', 'What each job cost and the profit made'));
   if (can('ceo','manager','supervisor')) tiles.push(t('#technicians', 'Technicians', 'Workload, quality and speed'));
   tiles.push(t('#jobs', 'Jobs', can('technician') ? 'Your assigned jobs' : 'Open and recent jobs'));
@@ -451,6 +455,124 @@ async function followupsBox(co) {
   return box;
 }
 
+// ---- ERP: parts and stock ----
+const NUM = x => Number(x || 0), N0 = x => NUM(x).toLocaleString('en-US', { maximumFractionDigits: 2 });
+async function partsCard(j) {
+  if (!can('ceo', 'manager', 'admin', 'supervisor', 'advisor', 'technician')) return '';
+  const [{ data: used }, { data: st }] = await Promise.all([sb.from('v_job_parts').select('id,name,unit,qty,returned').eq('job_id', j.id).order('created_at'), sb.rpc('stock_overview')]);
+  const box = h('div', { class: 'card' }, h('h3', {}, 'Parts used on this job')), out = h('div');
+  if (!(used || []).length) box.append(h('div', { class: 'mut' }, 'No parts recorded yet.'));
+  for (const u of used || []) box.append(h('div', { class: 'row' }, h('span', { style: u.returned ? 'text-decoration:line-through' : '' }, u.name + ' × ' + N0(u.qty) + ' ' + u.unit + (u.returned ? ' (returned)' : '')),
+    !u.returned && can('ceo', 'manager', 'admin', 'supervisor') ? h('button', { type: 'button', onclick: async () => { if (!confirm('Return this part to stock?')) return; const { error } = await sb.rpc('return_part', { p_job_part: u.id }); if (error) out.append(msg('err', nice(error.message))); else job(j.id); } }, 'Return to stock') : ''));
+  if (!['COLLECTED', 'CANCELLED'].includes(j.status)) {
+    const sel = h('select', {}, h('option', { value: '' }, 'Choose a part...'), (st || []).filter(x => x.is_active && NUM(x.on_hand) > 0).map(x => h('option', { value: x.id }, x.name + ' (' + N0(x.on_hand) + ' in stock)'))), qty = h('input', { type: 'number', min: 0, step: '0.01', value: 1 }), go = h('button', { class: 'p', type: 'button' }, 'Use part');
+    go.onclick = async () => { out.textContent = ''; if (!sel.value) return out.append(msg('err', 'Choose a part.')); const { error } = await sb.rpc('use_part', { p_job: j.id, p_part: sel.value, p_qty: NUM(qty.value) }); if (error) return out.append(msg('err', nice(error.message))); job(j.id); };
+    box.append(h('div', { class: 'mut', style: 'margin-top:8px' }, 'Using a part takes it out of stock and adds its cost to the job.'), sel, qty, go);
+  }
+  box.append(out); return box;
+}
+
+async function stock() {
+  const manage = can('ceo', 'manager', 'admin'), money_ = can('ceo', 'manager', 'admin', 'accounting'), body = h('div'), q = h('input', { placeholder: 'Search parts' });
+  async function draw() {
+    body.textContent = '';
+    const { data: rows, error } = await sb.rpc('stock_overview');
+    if (error) return body.append(msg('err', nice(error.message) + (/stock_overview/.test(error.message) ? ' (Run file 16_erp_core.sql in Supabase first.)' : '')));
+    const low = rows.filter(r => r.low);
+    if (low.length) body.append(h('div', { class: 'card', style: 'border-left:5px solid var(--bad)' }, h('b', {}, low.length + ' part(s) running low: '), low.map(r => r.name + ' (' + N0(r.on_hand) + ')').join(', ')));
+    if (manage) {
+      const f = {}, mk = (k, t, l, ex) => { f[k] = h('input', Object.assign({ type: t || 'text' }, ex || {})); return field(l, f[k]); }, out = h('div'), add = h('button', { class: 'p', type: 'button' }, 'Save part');
+      add.onclick = async () => { out.textContent = ''; const { error: e } = await sb.rpc('save_part', { p: { name: f.name.value, sku: f.sku.value, unit: f.unit.value || 'pcs', sell_price: NUM(f.sell.value), reorder_level: NUM(f.re.value) } }); if (e) return out.append(msg('err', e.code === '23505' || /duplicate/.test(e.message) ? 'This part already exists.' : nice(e.message))); draw(); };
+      body.append(h('details', { class: 'card' }, h('summary', {}, h('b', {}, '+ Add a part')), mk('name', 'text', 'Part name'), mk('sku', 'text', 'Part number (optional)'), mk('unit', 'text', 'Unit (pcs, litres, set)', { placeholder: 'pcs' }), mk('sell', 'number', 'Selling price (₦)', { min: 0 }), mk('re', 'number', 'Warn me when stock is at or below', { min: 0 }), add, out,
+        h('div', { class: 'mut' }, 'Cost price is set automatically when you receive a purchase.')));
+    }
+    const list = h('div'); body.append(list);
+    const render = () => { list.textContent = ''; const t = q.value.trim().toLowerCase();
+      for (const r of rows.filter(r => !t || (r.name + ' ' + (r.sku || '')).toLowerCase().includes(t))) {
+        const adj = manage ? h('button', { type: 'button', onclick: async () => { const d = prompt('How many to add (use a minus to remove)? e.g. 5 or -2'); if (d === null || !NUM(d)) return; const why = prompt('Reason (required) e.g. counted stock, damaged'); if (!why) return;
+          const { error: e } = await sb.rpc('stock_adjust', { p_part: r.id, p_branch: me.branch_id, p_delta: NUM(d), p_reason: why }); if (e) alert(nice(e.message)); else draw(); } }, 'Adjust') : '';
+        list.append(h('div', { class: 'card', style: r.low ? 'border-left:5px solid var(--bad)' : '' }, h('div', { class: 'row' }, h('span', {}, h('b', {}, r.name), h('div', { class: 'mut' }, (r.sku || '') + (r.sku ? ' · ' : '') + r.unit + (money_ ? ' · cost ' + money(r.cost_price, 'NGN') + ' · sells ' + money(r.sell_price, 'NGN') : ''))),
+          h('span', { style: 'text-align:right' }, h('b', { class: r.low ? 'err' : '', style: 'font-size:20px;margin:0' }, N0(r.on_hand)), h('div', { class: 'mut' }, r.low ? 'LOW' : 'in stock'), adj))));
+      } if (!list.children.length) list.append(h('div', { class: 'card mut' }, 'No parts yet.' + (manage ? ' Add your first part above.' : ''))); };
+    q.oninput = render; render();
+  }
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Parts and stock'), field('Search', q), body); draw();
+}
+
+// ---- ERP: purchasing ----
+async function purchasing() {
+  if (!can('ceo', 'manager', 'admin', 'accounting')) return show(msg('err', 'Not allowed.'));
+  const body = h('div'), manage = can('ceo', 'manager', 'admin'); show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Purchasing'), body);
+  async function draw() {
+    body.textContent = '';
+    const [{ data: d, error }, { data: parts }] = await Promise.all([sb.rpc('purchasing_overview'), sb.rpc('stock_overview')]);
+    if (error) return body.append(msg('err', nice(error.message) + (/purchasing_overview/.test(error.message) ? ' (Run file 16_erp_core.sql in Supabase first.)' : '')));
+    const owed = d.purchases.filter(p => p.status === 'RECEIVED').reduce((a, p) => a + NUM(p.total) - NUM(p.paid), 0);
+    body.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, 'We owe suppliers'), h('b', {}, money(owed, 'NGN')))));
+    if (manage) {
+      const sn = h('input'), sp = h('input', { type: 'tel' }), sb_ = h('input'), so = h('div'), sa = h('button', { type: 'button' }, 'Save supplier');
+      sa.onclick = async () => { so.textContent = ''; const { error: e } = await sb.rpc('save_supplier', { p: { name: sn.value, phone: sp.value, bank_details: sb_.value } }); if (e) return so.append(msg('err', /duplicate|23505/.test(e.message) ? 'This supplier already exists.' : nice(e.message))); draw(); };
+      body.append(h('details', { class: 'card' }, h('summary', {}, h('b', {}, '+ Add a supplier')), field('Name', sn), field('Phone', sp), field('Bank details', sb_), sa, so));
+      const sup = h('select', {}, h('option', { value: '' }, 'Choose supplier...'), d.suppliers.map(s => h('option', { value: s.id }, s.name))), ref = h('input', { placeholder: "Supplier's invoice number (optional)" }), lines = [], lbox = h('div'), po = h('div');
+      const addLine = () => { const ps = h('select', {}, h('option', { value: '' }, 'Part...'), parts.map(x => h('option', { value: x.id }, x.name))), qt = h('input', { type: 'number', min: 0, step: '0.01', placeholder: 'Qty' }), uc = h('input', { type: 'number', min: 0, step: '0.01', placeholder: 'Cost each (₦)' }); lines.push({ ps, qt, uc }); lbox.append(h('div', { style: 'display:grid;grid-template-columns:2fr 1fr 1fr;gap:6px;margin-top:6px' }, ps, qt, uc)); };
+      addLine(); const more = h('button', { type: 'button' }, '+ Another part'); more.onclick = addLine; const go = h('button', { class: 'p', type: 'button' }, 'Create purchase order');
+      go.onclick = async () => { po.textContent = ''; const ls = lines.filter(l => l.ps.value).map(l => ({ part_id: l.ps.value, qty: NUM(l.qt.value), unit_cost: NUM(l.uc.value) })); if (!sup.value) return po.append(msg('err', 'Choose a supplier.')); if (!ls.length || ls.some(l => !l.qty)) return po.append(msg('err', 'Add at least one part with a quantity.'));
+        const { error: e } = await sb.rpc('create_purchase', { p_supplier: sup.value, p_ref: ref.value, p_lines: ls }); if (e) return po.append(msg('err', nice(e.message))); draw(); };
+      body.append(h('div', { class: 'card' }, h('h3', {}, 'New purchase'), h('div', { class: 'mut' }, 'Record what you ordered. When the goods arrive, press Receive and stock goes up.'), field('Supplier', sup), field('Reference', ref), lbox, more, go, po));
+    }
+    for (const p of d.purchases) {
+      const o = h('div'), btns = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' }), bal = NUM(p.total) - NUM(p.paid);
+      const act = (l, fn, c) => { const b = h('button', { type: 'button', class: c || '' }, l); b.onclick = fn; btns.append(b); };
+      if (p.status === 'DRAFT' && manage) { act('Receive goods', async () => { const { error: e } = await sb.rpc('receive_purchase', { p_id: p.id }); if (e) o.append(msg('err', nice(e.message))); else draw(); }, 'p'); act('Cancel', async () => { if (!confirm('Cancel this order?')) return; const { error: e } = await sb.rpc('cancel_purchase', { p_id: p.id }); if (e) o.append(msg('err', nice(e.message))); else draw(); }); }
+      if (p.status === 'RECEIVED' && bal > 0 && can('ceo', 'manager', 'accounting')) act('Record payment', async () => { const a = prompt('Amount paid (₦)? Owed: ' + bal); if (!a) return; const r = prompt('Reference (optional)') || ''; const { error: e } = await sb.rpc('pay_supplier', { p_id: p.id, p_amount: NUM(a), p_method: 'Transfer', p_ref: r }); if (e) o.append(msg('err', nice(e.message))); else draw(); }, 'p');
+      body.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, p.id + ' · ' + p.supplier), h('span', { class: 'pill' }, p.status)), h('div', { class: 'mut' }, new Date(p.created_at).toLocaleDateString() + (p.supplier_ref ? ' · ref ' + p.supplier_ref : '')),
+        p.lines.map(l => h('div', { class: 'row' }, h('span', {}, l.part + ' × ' + N0(l.qty)), h('span', {}, money(l.unit_cost, 'NGN') + ' each'))),
+        h('div', { class: 'row' }, h('b', {}, 'Total'), h('b', {}, money(p.total, 'NGN'))), p.status === 'RECEIVED' ? h('div', { class: bal > 0 ? 'err' : 'okm', style: 'margin:0' }, bal > 0 ? 'Still owed: ' + money(bal, 'NGN') : 'Paid in full') : '', btns, o));
+    }
+  }
+  draw();
+}
+
+// ---- ERP: expenses ----
+async function expenses() {
+  if (!can('ceo', 'manager', 'admin', 'accounting')) return show(msg('err', 'Not allowed.'));
+  const today = new Date().toISOString().slice(0, 10), from = h('input', { type: 'date', value: today.slice(0, 8) + '01' }), to = h('input', { type: 'date', value: today }), body = h('div');
+  const CATS = ['Rent', 'Utilities', 'Fuel and generator', 'Tools and equipment', 'Transport', 'Marketing', 'Repairs and maintenance', 'Licences and taxes', 'Bank charges', 'Office and supplies', 'Other'];
+  const cat = h('select', {}, CATS.map(c => h('option', {}, c))), desc = h('input', { placeholder: 'e.g. Diesel for generator' }), amt = h('input', { type: 'number', min: 0, step: '0.01' }), dt = h('input', { type: 'date', value: today }), meth = h('select', {}, ['Cash', 'Transfer', 'POS', 'Cheque'].map(x => h('option', {}, x))), ref = h('input', { placeholder: 'Reference (optional)' }), out = h('div'), save = h('button', { class: 'p', type: 'button' }, 'Save expense');
+  save.onclick = async () => { out.textContent = ''; const { error } = await sb.rpc('add_expense', { p_category: cat.value, p_desc: desc.value, p_amount: NUM(amt.value), p_date: dt.value, p_method: meth.value, p_ref: ref.value }); if (error) return out.append(msg('err', nice(error.message))); desc.value = amt.value = ref.value = ''; draw(); };
+  async function draw() {
+    body.textContent = '';
+    const { data: rows, error } = await sb.from('expenses').select('id,category,description,amount,paid_on,method,reference,voided,void_reason').gte('paid_on', from.value).lte('paid_on', to.value).order('paid_on', { ascending: false }).limit(300);
+    if (error) return body.append(msg('err', nice(error.message) + (/expenses/.test(error.message) ? ' (Run file 16_erp_core.sql in Supabase first.)' : '')));
+    const live = rows.filter(r => !r.voided), by = {}; live.forEach(r => by[r.category] = (by[r.category] || 0) + NUM(r.amount));
+    body.append(h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', {}, 'Total spent'), h('b', {}, money(live.reduce((a, r) => a + NUM(r.amount), 0), 'NGN'))), Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => h('div', { class: 'row' }, h('span', { class: 'mut' }, k), h('span', {}, money(v, 'NGN'))))));
+    for (const r of rows) body.append(h('div', { class: 'card', style: r.voided ? 'opacity:.55' : '' }, h('div', { class: 'row' }, h('span', {}, h('b', {}, r.description), h('div', { class: 'mut' }, r.category + ' · ' + r.paid_on + ' · ' + r.method + (r.reference ? ' · ' + r.reference : '') + (r.voided ? ' · CANCELLED: ' + r.void_reason : ''))), h('span', {}, money(r.amount, 'NGN'), ' ',
+      !r.voided && can('ceo', 'manager', 'accounting') ? h('button', { type: 'button', style: 'color:var(--bad);background:none;border:0', onclick: async () => { const why = prompt('Why cancel this expense?'); if (!why) return; const { error: e } = await sb.rpc('void_expense', { p_id: r.id, p_reason: why }); if (e) alert(nice(e.message)); else draw(); } }, 'Cancel') : ''))));
+  }
+  from.onchange = to.onchange = draw;
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Expenses'), h('div', { class: 'card' }, h('h3', {}, 'Record an expense'), field('Category', cat), field('What was it for', desc), field('Amount (₦)', amt), field('Date', dt), field('Paid by', meth), ref, save, out),
+    h('div', { class: 'card', style: 'display:flex;gap:10px;flex-wrap:wrap' }, field('From', from), field('To', to)), body); draw();
+}
+
+// ---- ERP: profit and loss (CEO) ----
+async function profit() {
+  if (!can('ceo')) return show(msg('err', 'Profit and loss is for the CEO only, because it includes payroll.'));
+  const today = new Date().toISOString().slice(0, 10), from = h('input', { type: 'date', value: today.slice(0, 8) + '01' }), to = h('input', { type: 'date', value: today }), body = h('div');
+  async function draw() {
+    body.textContent = '';
+    const { data: d, error } = await sb.rpc('profit_loss', { p_from: from.value, p_to: to.value });
+    if (error) return body.append(msg('err', nice(error.message) + (/profit_loss/.test(error.message) ? ' (Run file 16_erp_core.sql in Supabase first.)' : '')));
+    const row = (a, b, bold, cls) => h('div', { class: 'row' }, bold ? h('b', {}, a) : h('span', {}, a), h(bold ? 'b' : 'span', { class: cls || '', style: 'margin:0' }, (b < 0 ? '-' : '') + money(Math.abs(b), 'NGN')));
+    body.append(h('div', { class: 'card' }, h('h3', {}, 'Profit and loss'), row('Sales invoiced', d.revenue, true), row('Cost of parts and work on jobs', -d.job_costs), row('Gross profit', d.gross_profit, true),
+      h('h4', {}, 'Running costs'), (d.expense_categories || []).map(c => row(c.category, -c.amount)), row('Total expenses', -d.expenses), row('Staff cost (approved payroll, incl. employer pension)', -d.payroll),
+      h('div', { style: 'border-top:2px solid var(--brand);margin-top:6px' }), row('NET PROFIT', d.net_profit, true, d.net_profit < 0 ? 'err' : 'okm')),
+      h('div', { class: 'card' }, h('h3', {}, 'Cash and position'), row('Money collected in this period (naira)', d.collected), row('Value of parts in stock now', d.stock_value), row('We owe suppliers', d.owed_to_suppliers)),
+      h('div', { class: 'mut' }, 'Sales are by invoice date, not payment date. Job costs are the parts and work entered on each job. Dollar invoices are converted at the rate saved on the invoice.'));
+  }
+  from.onchange = to.onchange = draw;
+  show(h('a', { href: '#home' }, '← Home'), h('h2', {}, 'Profit and loss'), h('div', { class: 'card', style: 'display:flex;gap:10px;flex-wrap:wrap' }, field('From', from), field('To', to)), body); draw();
+}
+
 // ---- customers ----
 async function customers() {
   const q = h('input', { placeholder: 'Search name or phone' }), list = h('div', { class: 'card' });
@@ -530,7 +652,7 @@ async function job(arg) {
     editable ? h('div', { class: 'card' }, field('Status', st), field('Diagnosis', diag),
       h('label', {}, conf, ' Diagnosis is confirmed by a test (only confirmed diagnoses go on quotations)'), field('Recommended solution', sol), save, out)
       : h('div', { class: 'card' }, h('div', {}, 'Status: ' + j.status.replace(/_/g, ' '))),
-    await jobBilling(j), await qcCard(j), await costCard(j), await updatesCard(j));
+    await jobBilling(j), await partsCard(j), await qcCard(j), await costCard(j), await updatesCard(j));
 }
 
 async function newJob(vehicleId) {
