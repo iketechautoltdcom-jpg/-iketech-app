@@ -352,7 +352,7 @@ async function dashboard() {
       const bk = bucket(t.daily), per = { day: 'by day', week: 'by week', month: 'by month' }[bk.mode], V1 = 'var(--v-s1)', V2 = 'var(--v-s2)';
       charts.append(chartLine('Sales and money collected', 'Naira, ' + per + '. Dollar amounts are converted at the rate saved on each invoice.', bk.labels, [{ name: 'Invoiced', color: V2, values: bk.rows.map(r => r.invoiced) }, { name: 'Collected', color: V1, values: bk.rows.map(r => r.collected) }], naira));
       charts.append(chartLine('Vehicles in and out', 'Number of vehicles, ' + per + '.', bk.labels, [{ name: 'Vehicles in', color: V1, values: bk.rows.map(r => r.jobs_in) }, { name: 'Vehicles out', color: V2, values: bk.rows.map(r => r.jobs_out) }], v => String(Math.round(v)), true));
-      const stages = [['RECEIVED', 'Received'], ['INSPECTING', 'Inspecting'], ['DIAGNOSED', 'Diagnosed'], ['AWAITING_APPROVAL', 'Awaiting approval'], ['APPROVED', 'Approved'], ['IN_REPAIR', 'In repair'], ['QUALITY_CHECK', 'Quality check'], ['READY', 'Ready']];
+      const stages = [['RECEIVED', 'Received'], ['INSPECTING', 'Inspecting'], ['DIAGNOSED', 'Diagnosed'], ['AWAITING_APPROVAL', 'Awaiting approval'], ['APPROVED', 'Approved'], ['AWAITING_PARTS', 'Waiting for parts'], ['IN_REPAIR', 'In repair'], ['QUALITY_CHECK', 'Quality check'], ['READY', 'Ready']];
       charts.append(chartBars('Vehicles in the workshop now', 'Open jobs at each stage, in the order work flows.', stages.map(([k, l]) => ({ name: l, value: Number((d.jobs_by_status || {})[k] || 0) })).filter(r => r.value > 0), v => String(v), 'No open jobs right now.'));
       const ag = t.ageing || {};
       charts.append(chartBars('Who owes us, by age', 'Unpaid invoices in naira, grouped by how late they are.', [{ name: 'Not yet due', value: Number(ag.current || 0) }, { name: '1 to 30 days late', value: Number(ag.d1_30 || 0) }, { name: '31 to 60 days late', value: Number(ag.d31_60 || 0) }, { name: 'Over 60 days late', value: Number(ag.d60 || 0) }], naira, 'Nobody owes the workshop anything.'));
@@ -702,7 +702,9 @@ async function job(arg) {
   const out = h('div'), editable = can('ceo','manager','admin','supervisor','advisor');
   const diag = h('textarea', { rows: 3 }, j.diagnosis || ''), conf = h('input', { type: 'checkbox' }), sol = h('textarea', { rows: 3 }, j.recommended_solution || '');
   conf.checked = j.diagnosis_confirmed;
-  const st = h('select', {}, ['RECEIVED','INSPECTING','DIAGNOSED','AWAITING_APPROVAL','APPROVED','IN_REPAIR','QUALITY_CHECK','READY','COLLECTED','CANCELLED'].map(s => h('option', { value: s, selected: s === j.status }, s.replace(/_/g, ' '))));
+  const NEXT = { RECEIVED: ['INSPECTING', 'DIAGNOSED', 'AWAITING_APPROVAL', 'CANCELLED'], INSPECTING: ['DIAGNOSED', 'AWAITING_APPROVAL', 'CANCELLED'], DIAGNOSED: ['AWAITING_APPROVAL', 'CANCELLED'], AWAITING_APPROVAL: ['DIAGNOSED', 'CANCELLED'], APPROVED: ['AWAITING_PARTS', 'IN_REPAIR', 'CANCELLED'], AWAITING_PARTS: ['IN_REPAIR', 'CANCELLED'], IN_REPAIR: ['AWAITING_PARTS', 'CANCELLED'], QUALITY_CHECK: ['IN_REPAIR', 'CANCELLED'], READY: ['IN_REPAIR', 'CANCELLED'] };
+  const opts = [j.status, ...(NEXT[j.status] || []).filter(x => x !== 'CANCELLED' || can('ceo', 'manager'))];
+  const st = h('select', {}, opts.map(s => h('option', { value: s, selected: s === j.status }, s.replace(/_/g, ' ') + (s === j.status ? ' (now)' : ''))));
   const save = h('button', { class: 'p' }, 'Save changes');
   save.onclick = async () => {
     save.disabled = true; out.textContent = '';
@@ -1183,7 +1185,13 @@ async function invoice(id) {
   const out = h('div'), box = h('div', { class: 'card' }, h('h3', {}, 'Status'));
   const setStatus = (label, status, style) => h('button', { class: 'p', type: 'button', style: 'margin:0 6px 6px 0;' + (style || ''), onclick: async () => {
     if (status === 'CANCELLED' && !confirm('Cancel this invoice? This cannot be undone.')) return;
-    out.textContent = ''; const { error } = await sb.from('invoices').update({ status }).eq('id', id); if (error) return out.append(msg('err', nice(error.message))); reload(); } }, label);
+    out.textContent = ''; let patch = { status };
+    let { error } = await sb.from('invoices').update(patch).eq('id', id);
+    if (error && status === 'ISSUED' && /more than the quotations/.test(error.message)) {
+      out.append(msg('err', nice(error.message)));
+      if (can('ceo', 'manager')) { const why = prompt('This invoice includes work the customer did not approve in a quotation. To issue it anyway, type the reason (who agreed, how, when):'); if (why && why.trim().length >= 5) { patch = { status, unquoted_reason: why.trim() }; await sb.from('invoices').update({ unquoted_reason: why.trim() }).eq('id', id); ({ error } = await sb.from('invoices').update({ status }).eq('id', id)); } }
+    }
+    if (error) { out.textContent = ''; return out.append(msg('err', nice(error.message))); } reload(); } }, label);
   if (canBill()) { if (inv.status === 'DRAFT') box.append(setStatus('Issue invoice', 'ISSUED'), setStatus('Cancel', 'CANCELLED', 'background:var(--bad)')); if (inv.status === 'ISSUED') box.append(setStatus('Cancel invoice', 'CANCELLED', 'background:var(--bad)')); }
   box.append(out); parts.push(box);
   parts.push(printButton('invoice', id, 'Print invoice / PDF'));
